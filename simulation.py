@@ -1,7 +1,7 @@
 import math
 import random
 import copy # For deepcopy
-import config
+import config # Keep for fallback or if current_tote_config is not passed in some contexts
 import core_utils
 
 def attempt_place_case(case_obj, tote_obj):
@@ -86,35 +86,51 @@ def finalize_and_store_tote(tote_obj, target_list):
         tote_obj["utilization_percent"] = 0.0 # For empty totes
     target_list.append(copy.deepcopy(tote_obj))
 
-def generate_test_cases(num_cases, seed=None):
-    """Generates random case data for the simulation."""
+def generate_test_cases(num_cases, seed=None, current_tote_config=None): # Added current_tote_config
+    """Generates random case data for the simulation, respecting current tote dimensions if provided."""
     if seed is not None:
         random.seed(seed)
     test_cases_data = []
-    for i in range(num_cases):
-        l = random.randint(50, config.TOTE_MAX_LENGTH - 100)
-        w = random.randint(50, config.TOTE_MAX_WIDTH - 100)
-        h = random.randint(50, config.TOTE_MAX_HEIGHT - 150)
 
-        l = max(l, 2 * config.HEIGHT_MAP_RESOLUTION)
-        w = max(w, 2 * config.HEIGHT_MAP_RESOLUTION)
-        h = max(h, 2 * config.HEIGHT_MAP_RESOLUTION)
+    if current_tote_config:
+        max_l_bound = current_tote_config["TOTE_MAX_LENGTH"] - 100
+        max_w_bound = current_tote_config["TOTE_MAX_WIDTH"] - 100
+        max_h_bound = current_tote_config["TOTE_MAX_HEIGHT"] - 150
+        h_map_res = current_tote_config["HEIGHT_MAP_RESOLUTION"]
+    else: # Fallback to global config if no specific config is passed
+        max_l_bound = config.TOTE_MAX_LENGTH - 100
+        max_w_bound = config.TOTE_MAX_WIDTH - 100
+        max_h_bound = config.TOTE_MAX_HEIGHT - 150
+        h_map_res = config.HEIGHT_MAP_RESOLUTION
+
+    for i in range(num_cases):
+        # Ensure bounds are positive
+        l = random.randint(50, max(51, max_l_bound))
+        w = random.randint(50, max(51, max_w_bound))
+        h = random.randint(50, max(51, max_h_bound))
+
+        # Ensure dimensions are at least twice the resolution
+        l = max(l, 2 * h_map_res)
+        w = max(w, 2 * h_map_res)
+        h = max(h, 2 * h_map_res)
         test_cases_data.append({"sku": f"SKU{i+1:03}", "length": l, "width": w, "height": h})
     return test_cases_data
 
-def run_simulation_for_visualization_data(case_data_list):
+def run_simulation_for_visualization_data(case_data_list, current_tote_config): # Added current_tote_config
     """
     Runs the packing simulation and prepares data for visualization, including interim utilization.
     Returns a list of placed item details and full tote data.
+    Uses provided current_tote_config for tote dimensions and properties.
     """
     all_processed_totes_full_data = []
     visualization_output_list = []
     unplaceable_cases_log = []
 
     next_tote_id = 1
-    current_tote = core_utils.create_new_empty_tote(next_tote_id)
+    # Use current_tote_config for creating totes
+    current_tote = core_utils.create_new_empty_tote(next_tote_id, current_tote_config)
 
-    print(f"Starting simulation with {len(case_data_list)} cases.")
+    print(f"Starting simulation with {len(case_data_list)} cases using dynamic tote configuration.")
 
     for case_raw_data in case_data_list:
         current_case = core_utils.get_case_properties(
@@ -123,19 +139,23 @@ def run_simulation_for_visualization_data(case_data_list):
             case_raw_data["width"],
             case_raw_data["height"]
         )
-        is_fundamentally_too_large_vol = current_case["volume"] > config.TOTE_MAX_VOLUME
+        # Use current_tote_config for checks
+        is_fundamentally_too_large_vol = current_case["volume"] > current_tote_config["TOTE_MAX_VOLUME"]
         can_orient_to_fit_empty_tote_dims = any(
-            l_o <= config.TOTE_MAX_LENGTH and w_o <= config.TOTE_MAX_WIDTH and h_o <= config.TOTE_MAX_HEIGHT
+            l_o <= current_tote_config["TOTE_MAX_LENGTH"] and \
+            w_o <= current_tote_config["TOTE_MAX_WIDTH"] and \
+            h_o <= current_tote_config["TOTE_MAX_HEIGHT"]
             for l_o, w_o, h_o in current_case["orientations"]
         )
         is_fundamentally_too_large_dims = not can_orient_to_fit_empty_tote_dims
 
         if is_fundamentally_too_large_vol or is_fundamentally_too_large_dims:
             reason = "volume" if is_fundamentally_too_large_vol else "dimensions"
-            print(f"  LOG: Case SKU {current_case['sku']} is fundamentally too large ({reason}). Skipping.")
+            print(f"  LOG: Case SKU {current_case['sku']} is fundamentally too large ({reason}) for current tote config. Skipping.")
             unplaceable_cases_log.append({"sku": current_case['sku'], "reason": f"Fundamentally too large ({reason})"})
             continue
 
+        # attempt_place_case internally uses tote_obj's dimensions, which are set by create_new_empty_tote
         placement_details = attempt_place_case(current_case, current_tote)
         can_fit_volumetrically = current_case["volume"] <= current_tote["remaining_volume"]
 
@@ -148,7 +168,8 @@ def run_simulation_for_visualization_data(case_data_list):
             finalize_and_store_tote(current_tote, all_processed_totes_full_data)
 
             next_tote_id += 1
-            current_tote = core_utils.create_new_empty_tote(next_tote_id)
+            # Use current_tote_config for new totes
+            current_tote = core_utils.create_new_empty_tote(next_tote_id, current_tote_config)
             print(f"  INFO: Started new Tote {current_tote['id']}.")
 
             placement_details_new_tote = attempt_place_case(current_case, current_tote)
