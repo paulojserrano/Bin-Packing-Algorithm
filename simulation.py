@@ -118,21 +118,36 @@ def generate_test_cases(num_cases, seed=None, current_tote_config=None): # Added
 
 def run_simulation_for_visualization_data(case_data_list, current_tote_config): # Added current_tote_config
     """
-    Runs the packing simulation and prepares data for visualization, including interim utilization.
-    Returns a list of placed item details and full tote data.
+    Runs the packing simulation as a generator, yielding progress and intermediate results.
     Uses provided current_tote_config for tote dimensions and properties.
+    Yields dictionaries with 'progress', 'status_message', 'intermediate_totes_data',
+    'intermediate_vis_data', and 'unplaceable_log'.
     """
     all_processed_totes_full_data = []
     visualization_output_list = []
     unplaceable_cases_log = []
+    total_cases = len(case_data_list)
+    processed_cases = 0
 
     next_tote_id = 1
     # Use current_tote_config for creating totes
     current_tote = core_utils.create_new_empty_tote(next_tote_id, current_tote_config)
 
-    print(f"Starting simulation with {len(case_data_list)} cases using dynamic tote configuration.")
+    status_message = f"Starting simulation with {total_cases} cases..."
+    print(status_message) # Keep console log for debugging if needed
+    yield {
+        "progress": 0.0,
+        "status_message": status_message,
+        "intermediate_totes_data": [],
+        "intermediate_vis_data": [],
+        "unplaceable_log": []
+    }
 
-    for case_raw_data in case_data_list:
+    for i, case_raw_data in enumerate(case_data_list):
+        processed_cases = i + 1
+        progress = processed_cases / total_cases if total_cases > 0 else 0.0
+        status_message = f"Processing case {processed_cases}/{total_cases} (SKU: {case_raw_data.get('sku', 'N/A')})..."
+
         current_case = core_utils.get_case_properties(
             case_raw_data["sku"],
             case_raw_data["length"],
@@ -151,70 +166,153 @@ def run_simulation_for_visualization_data(case_data_list, current_tote_config): 
 
         if is_fundamentally_too_large_vol or is_fundamentally_too_large_dims:
             reason = "volume" if is_fundamentally_too_large_vol else "dimensions"
-            print(f"  LOG: Case SKU {current_case['sku']} is fundamentally too large ({reason}) for current tote config. Skipping.")
+            status_message = f"Case SKU {current_case['sku']} is fundamentally too large ({reason}). Skipping."
+            print(f"  LOG: {status_message}")
             unplaceable_cases_log.append({"sku": current_case['sku'], "reason": f"Fundamentally too large ({reason})"})
+            # Yield progress even when skipping
+            yield {
+                "progress": progress,
+                "status_message": status_message,
+                "intermediate_totes_data": copy.deepcopy(all_processed_totes_full_data + ([current_tote] if current_tote else [])), # Include current tote state
+                "intermediate_vis_data": copy.deepcopy(visualization_output_list),
+                "unplaceable_log": copy.deepcopy(unplaceable_cases_log)
+            }
             continue
 
-        # attempt_place_case internally uses tote_obj's dimensions, which are set by create_new_empty_tote
+        # attempt_place_case internally uses tote_obj's dimensions
         placement_details = attempt_place_case(current_case, current_tote)
         can_fit_volumetrically = current_case["volume"] <= current_tote["remaining_volume"]
 
         if placement_details["can_fit"] and can_fit_volumetrically:
             add_case_to_tote_and_update_state(current_case, current_tote, placement_details)
-            print(f"  SUCCESS: Placed {current_case['sku']} in Tote {current_tote['id']}. Interim Util: {current_case['interim_tote_utilization_at_placement']:.2f}%")
+            status_message = f"Placed {current_case['sku']} in Tote {current_tote['id']} (Util: {current_case['interim_tote_utilization_at_placement']:.1f}%)"
+            print(f"  SUCCESS: {status_message}")
         else:
             fit_reason = "no spatial fit" if not placement_details["can_fit"] else "insufficient remaining volume"
-            print(f"  INFO: Case {current_case['sku']} does not fit in Tote {current_tote['id']} ({fit_reason}). Finalizing tote.")
+            status_message = f"Case {current_case['sku']} doesn't fit Tote {current_tote['id']} ({fit_reason}). Finalizing tote."
+            print(f"  INFO: {status_message}")
             finalize_and_store_tote(current_tote, all_processed_totes_full_data)
 
             next_tote_id += 1
             # Use current_tote_config for new totes
             current_tote = core_utils.create_new_empty_tote(next_tote_id, current_tote_config)
-            print(f"  INFO: Started new Tote {current_tote['id']}.")
+            status_message = f"Started new Tote {current_tote['id']}."
+            print(f"  INFO: {status_message}")
 
             placement_details_new_tote = attempt_place_case(current_case, current_tote)
             can_fit_new_tote_volumetrically = current_case["volume"] <= current_tote["remaining_volume"]
 
             if placement_details_new_tote["can_fit"] and can_fit_new_tote_volumetrically:
                 add_case_to_tote_and_update_state(current_case, current_tote, placement_details_new_tote)
-                print(f"  SUCCESS: Placed {current_case['sku']} in new Tote {current_tote['id']}. Interim Util: {current_case['interim_tote_utilization_at_placement']:.2f}%")
+                status_message = f"Placed {current_case['sku']} in new Tote {current_tote['id']} (Util: {current_case['interim_tote_utilization_at_placement']:.1f}%)"
+                print(f"  SUCCESS: {status_message}")
             else:
                 reason_new_tote = "no spatial fit" if not placement_details_new_tote["can_fit"] else "insufficient volume (unexpected)"
-                print(f"  ERROR: Case SKU {current_case['sku']} could not be placed even in new Tote {current_tote['id']} ({reason_new_tote}). Skipping.")
+                status_message = f"Case SKU {current_case['sku']} could not be placed even in new Tote {current_tote['id']} ({reason_new_tote}). Skipping."
+                print(f"  ERROR: {status_message}")
                 unplaceable_cases_log.append({"sku": current_case['sku'], "reason": f"Could not fit new empty tote ({reason_new_tote})"})
 
-    if len(current_tote["items"]) > 0 or (current_tote["id"] == 1 and not all_processed_totes_full_data) :
-        finalize_and_store_tote(current_tote, all_processed_totes_full_data)
-        print(f"\nFinalizing last active Tote {current_tote['id']}. Final Utilization: {current_tote['utilization_percent']:.2f}%")
+        # --- Prepare data for visualization list (do this incrementally) ---
+        # Find the tote the item was *actually* placed in (could be current_tote or the last one in all_processed_totes_full_data if a new one was just started)
+        placed_in_tote = None
+        if "position_in_tote_grid" in current_case: # Check if the case was successfully placed in *some* tote
+            if current_case in current_tote["items"]:
+                 placed_in_tote = current_tote
+            # This check might be complex if the item caused the *previous* tote to finalize.
+            # For simplicity, we'll rebuild the vis_list from the tote data each yield.
 
+        # --- Rebuild visualization list based on current state ---
+        current_visualization_output_list = []
+        # Include finalized totes
+        for tote in all_processed_totes_full_data:
+            for item in tote["items"]:
+                grid_x, grid_y = item["position_in_tote_grid"]
+                actual_x_coord = grid_x * tote["height_map_resolution"]
+                actual_y_coord = grid_y * tote["height_map_resolution"]
+                actual_z_coord = item["placement_z_level"]
+                current_visualization_output_list.append({
+                    "tote_id": tote["id"],
+                    "tote_dimensions_mm": {"length": tote["max_length"], "width": tote["max_width"], "height": tote["max_height"]},
+                    "case_sku": item["sku"],
+                    "original_case_dims_mm": item["original_dims"],
+                    "placed_case_dims_mm": {"length": item["chosen_orientation_dims"][0], "width": item["chosen_orientation_dims"][1], "height": item["chosen_orientation_dims"][2]},
+                    "position_mm": { "x": actual_x_coord, "y": actual_y_coord, "z": actual_z_coord },
+                    "current_tote_utilization_percent": item.get("interim_tote_utilization_at_placement", 0.0)
+                })
+        # Include items in the currently active tote
+        if current_tote:
+            for item in current_tote["items"]:
+                 grid_x, grid_y = item["position_in_tote_grid"]
+                 actual_x_coord = grid_x * current_tote["height_map_resolution"]
+                 actual_y_coord = grid_y * current_tote["height_map_resolution"]
+                 actual_z_coord = item["placement_z_level"]
+                 current_visualization_output_list.append({
+                    "tote_id": current_tote["id"],
+                    "tote_dimensions_mm": {"length": current_tote["max_length"], "width": current_tote["max_width"], "height": current_tote["max_height"]},
+                    "case_sku": item["sku"],
+                    "original_case_dims_mm": item["original_dims"],
+                    "placed_case_dims_mm": {"length": item["chosen_orientation_dims"][0], "width": item["chosen_orientation_dims"][1], "height": item["chosen_orientation_dims"][2]},
+                    "position_mm": { "x": actual_x_coord, "y": actual_y_coord, "z": actual_z_coord },
+                    "current_tote_utilization_percent": item.get("interim_tote_utilization_at_placement", 0.0)
+                 })
+
+
+        # Yield current state
+        yield {
+            "progress": progress,
+            "status_message": status_message,
+            # Combine finalized totes with the current active tote for intermediate display
+            "intermediate_totes_data": copy.deepcopy(all_processed_totes_full_data + ([current_tote] if current_tote else [])),
+            "intermediate_vis_data": copy.deepcopy(current_visualization_output_list), # Use the rebuilt list
+            "unplaceable_log": copy.deepcopy(unplaceable_cases_log)
+        }
+
+
+    # --- Finalization after loop ---
+    if current_tote and (len(current_tote["items"]) > 0 or (current_tote["id"] == 1 and not all_processed_totes_full_data)):
+        finalize_and_store_tote(current_tote, all_processed_totes_full_data)
+        status_message = f"Finalizing last active Tote {current_tote['id']} (Util: {current_tote['utilization_percent']:.1f}%)"
+        print(f"\n{status_message}")
+    else:
+        status_message = "Simulation loop finished."
+        print(f"\n{status_message}")
+
+
+    # --- Final Yield (or could return this) ---
+    # Rebuild final visualization list one last time
+    final_visualization_output_list = []
     for tote in all_processed_totes_full_data:
         for item in tote["items"]:
             grid_x, grid_y = item["position_in_tote_grid"]
             actual_x_coord = grid_x * tote["height_map_resolution"]
             actual_y_coord = grid_y * tote["height_map_resolution"]
             actual_z_coord = item["placement_z_level"]
-
-            visualization_output_list.append({
+            final_visualization_output_list.append({
                 "tote_id": tote["id"],
-                "tote_dimensions_mm": {
-                    "length": tote["max_length"], "width": tote["max_width"], "height": tote["max_height"]
-                },
+                "tote_dimensions_mm": {"length": tote["max_length"], "width": tote["max_width"], "height": tote["max_height"]},
                 "case_sku": item["sku"],
                 "original_case_dims_mm": item["original_dims"],
-                "placed_case_dims_mm": {
-                    "length": item["chosen_orientation_dims"][0],
-                    "width": item["chosen_orientation_dims"][1],
-                    "height": item["chosen_orientation_dims"][2]
-                },
+                "placed_case_dims_mm": {"length": item["chosen_orientation_dims"][0], "width": item["chosen_orientation_dims"][1], "height": item["chosen_orientation_dims"][2]},
                 "position_mm": { "x": actual_x_coord, "y": actual_y_coord, "z": actual_z_coord },
                 "current_tote_utilization_percent": item.get("interim_tote_utilization_at_placement", 0.0)
             })
 
-    print(f"\nSimulation finished. Processed {len(all_processed_totes_full_data)} totes for visualization.")
-    print(f"Number of items placed for visualization: {len(visualization_output_list)}")
+    final_status = f"Simulation finished. Processed {len(all_processed_totes_full_data)} totes. Placed: {len(final_visualization_output_list)}. Unplaceable: {len(unplaceable_cases_log)}."
+    print(final_status)
     if unplaceable_cases_log:
-        print(f"Number of unplaceable items: {len(unplaceable_cases_log)}")
-        for entry in unplaceable_cases_log:
-             print(f"  - SKU: {entry['sku']}, Reason: {entry['reason']}")
+         print("Unplaceable items:")
+         for entry in unplaceable_cases_log:
+              print(f"  - SKU: {entry['sku']}, Reason: {entry['reason']}")
 
-    return visualization_output_list, all_processed_totes_full_data
+    yield {
+        "progress": 1.0,
+        "status_message": final_status,
+        "intermediate_totes_data": copy.deepcopy(all_processed_totes_full_data), # Final tote data
+        "intermediate_vis_data": copy.deepcopy(final_visualization_output_list), # Final vis data
+        "unplaceable_log": copy.deepcopy(unplaceable_cases_log),
+        "is_final": True # Add a flag to indicate completion
+    }
+
+    # The generator naturally stops here after the final yield.
+    # No explicit return needed unless you want to return something *after* the last yield,
+    # but the final state is captured in the last yielded dictionary.

@@ -76,7 +76,110 @@ if 'simulation_results' not in st.session_state:
     }
 if 'original_item_count' not in st.session_state: # To store original item count for captions
     st.session_state.original_item_count = 0
+if 'max_rows_csv' not in st.session_state: # For CSV max rows input
+    st.session_state.max_rows_csv = 0
+# For progress and pause/resume
+if 'simulation_running' not in st.session_state:
+    st.session_state.simulation_running = False
+if 'simulation_paused' not in st.session_state:
+    st.session_state.simulation_paused = False
+if 'simulation_progress' not in st.session_state:
+    st.session_state.simulation_progress = 0.0
+if 'simulation_generator' not in st.session_state:
+    st.session_state.simulation_generator = None
+if 'intermediate_results' not in st.session_state: # Store yielded data
+    st.session_state.intermediate_results = None
+if 'status_message' not in st.session_state:
+    st.session_state.status_message = "Configure and run simulation."
+if 'current_tote_config_for_report' not in st.session_state: # For HTML report
+    st.session_state.current_tote_config_for_report = {}
 
+
+# --- HTML Report Generation Function ---
+def generate_styled_html_report(report_df, summary_stats_dict, tote_config):
+    report_title = "Bin Packing Simulation Report"
+    generation_time = pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    html_style = """
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 0; background-color: #f4f7f6; color: #333; line-height: 1.6; }
+        .report-container { max-width: 1000px; margin: 20px auto; background-color: #fff; padding: 30px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+        h1 { color: #2c3e50; text-align: center; border-bottom: 3px solid #3498db; padding-bottom: 15px; margin-bottom: 25px; font-size: 2em; }
+        h2 { color: #34495e; margin-top: 35px; border-bottom: 2px solid #5dade2; padding-bottom: 8px; font-size: 1.6em;}
+        .summary-table, .details-table { width: 100%; border-collapse: collapse; margin-top: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        .summary-table th, .summary-table td, .details-table th, .details-table td {
+            border: 1px solid #ddd; padding: 12px 15px; text-align: left; font-size: 0.95em;
+        }
+        .summary-table th { background-color: #3498db; color: white; font-weight: bold; }
+        .details-table th { background-color: #5dade2; color: white; font-weight: bold; }
+        .summary-table td:first-child { font-weight: bold; background-color: #ecf0f1; width: 40%; }
+        .footer { text-align: center; margin-top: 40px; padding-top: 20px; border-top: 1px solid #bdc3c7; font-size: 0.9em; color: #7f8c8d; }
+        .section { margin-bottom: 35px; padding: 15px; background-color: #fdfefe; border-radius: 5px; border: 1px solid #e0e0e0;}
+        .section-title { margin-bottom: 15px; }
+        .config-details p, .overall-stats p { margin: 8px 0; font-size: 1em; }
+        .config-details strong, .overall-stats strong { color: #2980b9; min-width: 200px; display: inline-block;}
+        table { page-break-inside: auto; }
+        tr { page-break-inside: avoid; page-break-after: auto; }
+        thead { display: table-header-group; } /* For table header repeat on page break for printing */
+        @media print {
+            body { background-color: #fff; margin: 0; padding: 0;}
+            .report-container { box-shadow: none; border: none; margin: 0; max-width: 100%; padding: 10px;}
+            h1, h2 {color: #000;} /* Simpler colors for print */
+            .summary-table th, .details-table th {background-color: #eee !important; color: #000 !important;}
+            .summary-table td:first-child {background-color: #f5f5f5 !important;}
+        }
+    </style>
+    """
+
+    html_content = f"<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'><title>{report_title}</title>{html_style}</head><body>"
+    html_content += f"<div class='report-container'>"
+    html_content += f"<h1>{report_title}</h1>"
+    html_content += f"<p class='footer' style='margin-bottom: 20px; border-top: none;'>Report generated on: {generation_time}</p>"
+
+    # Section: Simulation Configuration
+    html_content += "<div class='section config-details'>"
+    html_content += "<h2 class='section-title'>Simulation Configuration</h2>"
+    html_content += f"<p><strong>Tote Length:</strong> {tote_config.get('TOTE_MAX_LENGTH', 'N/A')} mm</p>"
+    html_content += f"<p><strong>Tote Width:</strong> {tote_config.get('TOTE_MAX_WIDTH', 'N/A')} mm</p>"
+    html_content += f"<p><strong>Tote Height:</strong> {tote_config.get('TOTE_MAX_HEIGHT', 'N/A')} mm</p>"
+    html_content += f"<p><strong>Height Map Resolution:</strong> {tote_config.get('HEIGHT_MAP_RESOLUTION', 'N/A')} mm</p>"
+    html_content += "</div>"
+
+    # Section: Overall Statistics
+    html_content += "<div class='section overall-stats'>"
+    html_content += "<h2 class='section-title'>Overall Packing Statistics</h2>"
+    html_content += f"<p><strong>Total Totes Used:</strong> {summary_stats_dict.get('total_totes_used', 'N/A')}</p>"
+    html_content += f"<p><strong>Total Cases Placed:</strong> {summary_stats_dict.get('total_items_placed', 'N/A')}</p>"
+    html_content += f"<p><strong>Cases That Did Not Fit:</strong> {summary_stats_dict.get('unplaced_items_count', 'N/A')}</p>"
+    avg_util_str = f"{summary_stats_dict.get('average_utilization', 0.0):.2f}%" if summary_stats_dict.get('average_utilization') is not None else "N/A"
+    min_util_str = f"{summary_stats_dict.get('min_utilization', 0.0):.2f}%" if summary_stats_dict.get('min_utilization') is not None else "N/A"
+    median_util_str = f"{summary_stats_dict.get('median_utilization', 0.0):.2f}%" if summary_stats_dict.get('median_utilization') is not None else "N/A"
+    max_util_str = f"{summary_stats_dict.get('max_utilization', 0.0):.2f}%" if summary_stats_dict.get('max_utilization') is not None else "N/A"
+    html_content += f"<p><strong>Average Tote Utilization:</strong> {avg_util_str}</p>"
+    html_content += f"<p><strong>Minimum Tote Utilization:</strong> {min_util_str}</p>"
+    html_content += f"<p><strong>Median Tote Utilization:</strong> {median_util_str}</p>"
+    html_content += f"<p><strong>Maximum Tote Utilization:</strong> {max_util_str}</p>"
+    html_content += "</div>"
+
+    # Section: Detailed Packing Report
+    html_content += "<div class='section'>"
+    html_content += "<h2 class='section-title'>Detailed Packing List per Tote</h2>"
+    if not report_df.empty:
+        # Group by Tote ID for better readability if multiple totes
+        if 'Tote ID' in report_df.columns:
+            for tote_id, group_df in report_df.groupby('Tote ID'):
+                html_content += f"<h3>Tote: {tote_id}</h3>"
+                html_content += group_df.to_html(index=False, escape=False, classes="details-table", border=0)
+                html_content += "<br>" # Add some space between tote tables
+        else: # Fallback if no Tote ID column (should not happen with current report_df)
+            html_content += report_df.to_html(index=False, escape=False, classes="details-table", border=0)
+    else:
+        html_content += "<p>No items were packed in this simulation run.</p>"
+    html_content += "</div>"
+
+    html_content += f"<div class='footer'>End of Report</div>"
+    html_content += "</div></body></html>"
+    return html_content
 
 # --- Sidebar Configuration ---
 st.sidebar.header("Simulation Configuration")
@@ -154,6 +257,16 @@ else: # "Upload CSV File"
             st.session_state.column_mappings = {k: None for k in st.session_state.column_mappings}
             st.session_state.uploaded_file_name = None
 
+    if uploaded_file is not None: # Only show if a file is uploaded
+        st.sidebar.number_input(
+            "Max rows to load from CSV (0 for all)",
+            min_value=0,
+            value=st.session_state.get('max_rows_csv', 0), 
+            step=100,
+            key="max_rows_csv", # Links to st.session_state.max_rows_csv
+            help="Enter 0 or leave blank to load all rows. Headers are always read."
+        )
+
     if st.session_state.csv_headers:
         st.sidebar.subheader("Map CSV Columns")
         def get_col_index(col_key, options_list, default_idx=0):
@@ -186,11 +299,21 @@ else: # "Upload CSV File"
         st.sidebar.warning("Could not read columns. Check CSV format or re-upload.")
 
 
-# --- Run Simulation Button ---
-if st.sidebar.button("Run Simulation", key="run_button", type="primary"):
+# --- Run/Pause Simulation Buttons ---
+run_col, pause_col = st.sidebar.columns(2)
+
+# Run Button
+if run_col.button("Run Simulation", key="run_button", type="primary", disabled=st.session_state.get('simulation_running', False)):
+    # Reset all relevant states
     st.session_state.simulation_ran = False
+    st.session_state.simulation_running = True # Start the process
+    st.session_state.simulation_paused = False
+    st.session_state.simulation_progress = 0.0
+    st.session_state.simulation_generator = None
     st.session_state.simulation_results = {'visualization_output_list': [], 'full_totes_summary_data': []}
+    st.session_state.intermediate_results = None
     st.session_state.original_item_count = 0 # Reset item count
+    st.session_state.status_message = "Initializing simulation..."
 
     dynamic_tote_config = {
         "TOTE_MAX_LENGTH": int(tote_length_input),
@@ -202,21 +325,25 @@ if st.sidebar.button("Run Simulation", key="run_button", type="primary"):
         "GRID_DIM_Y": max(1, math.ceil(int(tote_width_input) / int(height_map_resolution_input)))
     }
 
+    # --- Prepare simulation ---
     simulation_can_proceed = False
     current_input_cases = []
+    st.session_state.current_tote_config_for_report = dynamic_tote_config # Save for report
 
     if case_data_source == "Generate Random Cases":
-        with st.spinner("Generating test cases..."):
-            current_input_cases = simulation.generate_test_cases(
-                num_cases=int(num_random_cases_input),
-                seed=int(random_seed_input),
-                current_tote_config=dynamic_tote_config
-            )
+        # Generate cases directly
+        current_input_cases = simulation.generate_test_cases(
+            num_cases=int(num_random_cases_input),
+            seed=int(random_seed_input),
+            current_tote_config=dynamic_tote_config
+        )
         if current_input_cases:
             st.session_state.original_item_count = len(current_input_cases)
             simulation_can_proceed = True
+            st.session_state.status_message = f"Generated {len(current_input_cases)} random cases. Starting simulation..."
         else:
             st.warning("No random cases were generated.")
+            st.session_state.simulation_running = False # Stop if no cases
 
     elif case_data_source == "Upload CSV File":
         if uploaded_file is not None:
@@ -226,86 +353,143 @@ if st.sidebar.button("Run Simulation", key="run_button", type="primary"):
             sku_col_map = st.session_state.column_mappings.get('sku_col')
 
             if not all([len_col, wid_col, hei_col]):
-                st.error("Column mapping incomplete. Please select columns for Length, Width, and Height in the sidebar.")
+                st.error("Column mapping incomplete. Please select columns for Length, Width, and Height.")
+                st.session_state.simulation_running = False # Stop
             else:
                 try:
-                    uploaded_file.seek(0) # Ensure reading from the start of the file
-
-                    # Determine which columns to read from the CSV
-                    columns_to_read = []
-                    if len_col: columns_to_read.append(len_col)
-                    if wid_col: columns_to_read.append(wid_col)
-                    if hei_col: columns_to_read.append(hei_col)
-                    if sku_col_map and sku_col_map != "Auto-generate SKU":
-                        columns_to_read.append(sku_col_map)
-                    
-                    # Remove duplicates in case a column was mapped to multiple roles (unlikely but safe)
-                    columns_to_read = list(set(columns_to_read))
-
-                    if not columns_to_read or not all(c in st.session_state.csv_headers for c in [len_col, wid_col, hei_col]):
-                        st.error("One or more essential mapped columns (Length, Width, Height) are not in the CSV headers. Please check mappings.")
+                    uploaded_file.seek(0)
+                    columns_to_read = list(set(filter(None, [len_col, wid_col, hei_col, sku_col_map if sku_col_map != "Auto-generate SKU" else None])))
+                    if not all(c in st.session_state.csv_headers for c in [len_col, wid_col, hei_col]):
+                         st.error("Essential mapped columns not found in CSV headers.")
+                         st.session_state.simulation_running = False # Stop
                     else:
-                        # Read only the specified columns
-                        df = pd.read_csv(uploaded_file, usecols=columns_to_read)
-                    
-                        # Validate data types and values for essential columns
-                        required_mapped_cols = {'Length': len_col, 'Width': wid_col, 'Height': hei_col}
-                        valid_data = True
-                        for std_name, actual_col in required_mapped_cols.items():
-                            if actual_col not in df.columns: # Should be caught by previous check, but good for safety
-                                st.error(f"Mapped column '{actual_col}' for {std_name} not found in loaded CSV data. This should not happen.")
-                                valid_data = False; break
-                            if not pd.api.types.is_numeric_dtype(df[actual_col]):
-                                st.error(f"Column '{actual_col}' (mapped to {std_name}) must contain numeric values.")
-                                valid_data = False; break
-                            if not (df[actual_col] > 0).all():
-                                st.error(f"All values in column '{actual_col}' (mapped to {std_name}) must be positive.")
-                                valid_data = False; break
+                        max_rows_val = st.session_state.get('max_rows_csv', 0)
+                        nrows_param = int(max_rows_val) if max_rows_val > 0 else None
+                        df = pd.read_csv(uploaded_file, usecols=columns_to_read, nrows=nrows_param)
 
-                        if valid_data:
+                        # Basic validation (can be expanded)
+                        if not all(pd.api.types.is_numeric_dtype(df[col]) for col in [len_col, wid_col, hei_col]):
+                            st.error("Length, Width, Height columns must be numeric.")
+                            st.session_state.simulation_running = False # Stop
+                        elif not all((df[col] > 0).all() for col in [len_col, wid_col, hei_col]):
+                             st.error("Length, Width, Height values must be positive.")
+                             st.session_state.simulation_running = False # Stop
+                        else:
                             for index, row in df.iterrows():
                                 sku_val = f"CSV_SKU_{index+1}"
                                 if sku_col_map and sku_col_map != "Auto-generate SKU" and sku_col_map in df.columns:
                                     sku_val = str(row[sku_col_map])
-                                # If sku_col_map was "Auto-generate SKU" or not in df.columns (e.g. not read), sku_val remains auto-generated
-
                                 current_input_cases.append({
-                                    "sku": sku_val,
-                                    "length": float(row[len_col]),
-                                    "width": float(row[wid_col]),
-                                    "height": float(row[hei_col])
+                                    "sku": sku_val, "length": float(row[len_col]),
+                                    "width": float(row[wid_col]), "height": float(row[hei_col])
                                 })
                             st.session_state.original_item_count = len(current_input_cases)
                             simulation_can_proceed = True
+                            st.session_state.status_message = f"Loaded {len(current_input_cases)} cases from CSV. Starting simulation..."
                 except Exception as e:
-                    st.error(f"Error processing CSV file with mapped columns: {e}")
+                    st.error(f"Error processing CSV: {e}")
+                    st.session_state.simulation_running = False # Stop
         else:
-            st.error("Please upload a CSV file when 'Upload CSV File' source is selected.")
+            st.error("Please upload a CSV file.")
+            st.session_state.simulation_running = False # Stop
 
+    # --- Initialize Generator if ready ---
     if simulation_can_proceed and current_input_cases:
-        st.header("Simulation Process & Results")
-        with st.spinner("Running packing simulation... This may take a moment."):
-            sim_vis_data, full_totes_summary = simulation.run_simulation_for_visualization_data(
-                case_data_list=current_input_cases,
-                current_tote_config=dynamic_tote_config
-            )
-            st.session_state.simulation_results['visualization_output_list'] = sim_vis_data
-            st.session_state.simulation_results['full_totes_summary_data'] = full_totes_summary
-            st.session_state.simulation_ran = True
-        st.success("Simulation finished!")
+        st.session_state.simulation_generator = simulation.run_simulation_for_visualization_data(
+            case_data_list=current_input_cases,
+            current_tote_config=dynamic_tote_config
+        )
+        st.rerun() # Start consuming the generator in the main script body
+    elif not simulation_can_proceed:
+        st.session_state.simulation_running = False # Ensure it's stopped if setup failed
+        st.rerun()
 
-    elif simulation_can_proceed and not current_input_cases:
-         st.warning("No case data was generated or loaded. Please check your inputs.")
-    elif not simulation_can_proceed and (case_data_source == "Upload CSV File" and not uploaded_file and st.session_state.column_mappings.get('length_col')):
-        pass # Avoid error if mappings exist but file is removed before run
-    elif not simulation_can_proceed and current_input_cases: # Should be caught by specific errors above
-        st.error("Simulation cannot proceed despite having case data. Check error messages above in the main panel or sidebar.")
+# Pause/Resume Button
+pause_label = "Pause" if not st.session_state.get('simulation_paused') else "Resume"
+if pause_col.button(pause_label, key="pause_button", disabled=not st.session_state.get('simulation_running', False)):
+    st.session_state.simulation_paused = not st.session_state.simulation_paused
+    st.session_state.status_message = "Simulation Paused." if st.session_state.simulation_paused else "Resuming simulation..."
+    st.rerun()
 
 
-# --- Display Results (Statistics first, then individual totes) ---
-if st.session_state.simulation_ran:
-    full_totes_summary_data = st.session_state.simulation_results['full_totes_summary_data']
-    visualization_output_list = st.session_state.simulation_results['visualization_output_list']
+# --- Simulation Progress Display Area ---
+st.header("Simulation Process & Results")
+progress_area = st.empty() # Placeholder for progress bar and status
+
+# --- Consume Generator (if running and not paused) ---
+if st.session_state.get('simulation_running') and not st.session_state.get('simulation_paused'):
+    if st.session_state.simulation_generator:
+        try:
+            # Get the next update from the simulation generator
+            yielded_data = next(st.session_state.simulation_generator, None)
+
+            if yielded_data:
+                st.session_state.simulation_progress = yielded_data.get("progress", 0.0)
+                st.session_state.status_message = yielded_data.get("status_message", "Processing...")
+                st.session_state.intermediate_results = yielded_data # Store the whole dict
+
+                # Check if this is the final yield
+                if yielded_data.get("is_final", False):
+                    st.session_state.simulation_running = False
+                    st.session_state.simulation_paused = False
+                    st.session_state.simulation_ran = True # Mark as completed
+                    # Store final results properly
+                    st.session_state.simulation_results['visualization_output_list'] = yielded_data.get('intermediate_vis_data', [])
+                    st.session_state.simulation_results['full_totes_summary_data'] = yielded_data.get('intermediate_totes_data', [])
+                    st.session_state.simulation_generator = None # Clear generator
+                    st.success("Simulation finished!") # Show success message
+                    st.session_state.status_message = yielded_data.get("status_message", "Simulation Complete.")
+                st.rerun() # Rerun to process next step or update UI after final step
+            else:
+                # Generator exhausted unexpectedly or finished without final flag (handle gracefully)
+                st.session_state.simulation_running = False
+                st.session_state.simulation_paused = False
+                st.session_state.simulation_ran = True # Assume finished if generator ends
+                st.session_state.simulation_generator = None
+                # Use the last known intermediate results as final if necessary
+                if st.session_state.intermediate_results:
+                     st.session_state.simulation_results['visualization_output_list'] = st.session_state.intermediate_results.get('intermediate_vis_data', [])
+                     st.session_state.simulation_results['full_totes_summary_data'] = st.session_state.intermediate_results.get('intermediate_totes_data', [])
+                     st.session_state.status_message = st.session_state.intermediate_results.get("status_message", "Simulation Ended.")
+                else:
+                     st.session_state.status_message = "Simulation ended unexpectedly."
+                st.rerun()
+
+        except Exception as e:
+            st.error(f"An error occurred during simulation: {e}")
+            st.session_state.simulation_running = False
+            st.session_state.simulation_paused = False
+            st.session_state.simulation_generator = None
+            st.rerun()
+
+# --- Update Progress Area ---
+with progress_area.container():
+    if st.session_state.get('simulation_running') or st.session_state.get('simulation_ran'):
+        progress_value = st.session_state.get('simulation_progress', 0.0)
+        status_text = st.session_state.get('status_message', '')
+        st.progress(progress_value, text=f"{status_text} ({progress_value:.0%})")
+    else:
+        st.info(st.session_state.get('status_message', "Configure parameters and click 'Run Simulation'."))
+
+
+# --- Display Results (Show intermediate if paused, final if ran) ---
+results_to_display = None
+if st.session_state.get('simulation_paused') and st.session_state.get('intermediate_results'):
+    # Show intermediate results when paused
+    results_to_display = st.session_state.intermediate_results
+    st.warning("Simulation Paused. Showing intermediate results.")
+elif st.session_state.get('simulation_ran'):
+    # Show final results after completion
+    results_to_display = {
+        'intermediate_totes_data': st.session_state.simulation_results['full_totes_summary_data'],
+        'intermediate_vis_data': st.session_state.simulation_results['visualization_output_list']
+        # We might need to reconstruct the unplaceable log if needed from final results, or store it separately
+    }
+
+if results_to_display:
+    full_totes_summary_data = results_to_display.get('intermediate_totes_data', [])
+    visualization_output_list = results_to_display.get('intermediate_vis_data', [])
+    # unplaceable_log = results_to_display.get('unplaceable_log', []) # If needed
 
 
     # --- Overall Statistics Section ---
@@ -400,7 +584,7 @@ if st.session_state.simulation_ran:
         st.markdown("###### Export Full Pack Report")
         if visualization_output_list:
             report_data = []
-            for item_vis_data in visualization_output_list:
+            for item_vis_data in visualization_output_list: # This is the detailed per-item-placement list
                 report_data.append({
                     "Tote ID": item_vis_data.get('tote_id', 'N/A'),
                     "SKU": item_vis_data.get('case_sku', 'N/A'),
@@ -412,6 +596,18 @@ if st.session_state.simulation_ran:
                     "Position Z (mm)": item_vis_data.get('position_mm', {}).get('z', 'N/A'),
                 })
             report_df = pd.DataFrame(report_data)
+
+            # Prepare data for styled HTML report
+            current_tote_config = st.session_state.get('current_tote_config_for_report', {})
+            report_summary_stats = {
+                "total_totes_used": total_totes_used,
+                "total_items_placed": total_items_placed_in_stats,
+                "unplaced_items_count": unplaced_items_count,
+                "average_utilization": statistics.mean(utilization_percentages) if utilization_percentages else None,
+                "min_utilization": min(utilization_percentages) if utilization_percentages else None,
+                "median_utilization": statistics.median(utilization_percentages) if utilization_percentages else None,
+                "max_utilization": max(utilization_percentages) if utilization_percentages else None,
+            }
             
             csv_export = report_df.to_csv(index=False).encode('utf-8')
             st.download_button(
@@ -421,9 +617,19 @@ if st.session_state.simulation_ran:
                 mime="text/csv",
                 key="download_report_csv"
             )
+
+            # Generate styled HTML
+            html_content_styled = generate_styled_html_report(report_df, report_summary_stats, current_tote_config)
+            html_export_styled = html_content_styled.encode('utf-8')
+            st.download_button(
+                label="Download Full Pack Report (HTML)",
+                data=html_export_styled,
+                file_name="bin_packing_report_styled.html",
+                mime="text/html",
+                key="download_report_html_styled"
+            )
         else:
             st.caption("No packing data available to generate a report.")
-
 
         st.divider() # Divider after the statistics section
 
@@ -488,18 +694,42 @@ if st.session_state.simulation_ran:
 
             with st.expander(f"Tote ID: {tote_id_str} | Items: {items_packed_count} | Utilization: {utilization:.2f}%", expanded=False):
 
-                col1, col2 = st.columns([2, 1])
+                col1, col2 = st.columns([2, 1]) # Keep existing layout for details and plot
 
                 with col1:
                     st.markdown("###### 3D View")
                     if items_packed_count > 0:
-                        with st.spinner(f"Generating visualization for Tote {tote_id_str}..."):
-                            fig = visualization.generate_tote_figure(tote_summary_info)
-                            if fig:
-                                st.pyplot(fig, clear_figure=True)
-                                plt.close(fig)
-                            else:
-                                st.warning("Could not generate visualization figure for this tote.")
+                        # Use a unique key for the button based on tote_id_str
+                        button_key = f"load_plot_button_{tote_id_str}_{i}" # Add index i for more uniqueness if tote_id_str could repeat (e.g. "Tote_1" from two runs)
+                        
+                        # Check if plot was loaded in this session for this tote
+                        plot_loaded_session_key = f"plot_loaded_{tote_id_str}_{i}"
+
+                        if st.button("Load/Refresh 3D View", key=button_key):
+                            with st.spinner(f"Generating visualization for Tote {tote_id_str}..."):
+                                fig = visualization.generate_tote_figure(tote_summary_info)
+                                if fig:
+                                    # Store figure in session state to persist it if button is not pressed again
+                                    # but this can consume memory. For now, direct display.
+                                    st.session_state[plot_loaded_session_key] = fig 
+                                    # No, pyplot will display it. If we want to cache, need to handle display from cache.
+                                    # Simpler: just display it. It will disappear if expander re-renders without button press.
+                                    st.pyplot(fig, clear_figure=True)
+                                    plt.close(fig) # Close the figure to free memory after displaying
+                                    # To make it "stick" better, one might store the fig in session_state
+                                    # and then check session_state to display it, but that's more complex.
+                                    # This implementation: click to load. It shows. If page reloads/expander closes & opens, click again.
+                                else:
+                                    st.warning("Could not generate visualization figure for this tote.")
+                                    if plot_loaded_session_key in st.session_state:
+                                        del st.session_state[plot_loaded_session_key] # Clear if failed
+                        # else:
+                            # This part would be for displaying a cached plot if we implemented caching.
+                            # For now, plot only shows on button click.
+                            # if plot_loaded_session_key in st.session_state and st.session_state[plot_loaded_session_key]:
+                            #    st.pyplot(st.session_state[plot_loaded_session_key], clear_figure=True)
+
+
                     else:
                         st.caption("No items in this tote to visualize.")
 
@@ -531,5 +761,4 @@ if st.session_state.simulation_ran:
                         )
                     else:
                         st.caption("No items in this tote.")
-elif not st.sidebar.button("Run Simulation", key="initial_info_trigger_dummy", disabled=True, help="This is a hidden button to ensure this block runs only if sim not run"):
-    st.info("Configure parameters in the sidebar and click 'Run Simulation' to begin and see results.")
+# The initial info message is now handled by the progress_area logic when not running/ran.
