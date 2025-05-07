@@ -5,6 +5,7 @@ import math # For calculations
 import matplotlib.pyplot as plt # Added for plt.close() and histogram
 import statistics # For median
 import numpy as np # For histogram binning and other calculations if needed
+from collections import Counter, defaultdict # For new statistics
 
 # Import existing modules from the project
 import simulation
@@ -70,8 +71,8 @@ if 'simulation_ran' not in st.session_state:
     st.session_state.simulation_ran = False
 if 'simulation_results' not in st.session_state:
     st.session_state.simulation_results = {
-        'visualization_output_list': [], 
-        'full_totes_summary_data': []    
+        'visualization_output_list': [],
+        'full_totes_summary_data': []
     }
 if 'original_item_count' not in st.session_state: # To store original item count for captions
     st.session_state.original_item_count = 0
@@ -83,13 +84,13 @@ st.sidebar.header("Simulation Configuration")
 # --- Tote Configuration ---
 st.sidebar.subheader("Tote Dimensions (mm)")
 tote_length_input = st.sidebar.number_input(
-    "Tote Length", min_value=50, value=config.TOTE_MAX_LENGTH, step=10, key="tote_length"
+    "Tote Length", min_value=50, value=int(config.TOTE_MAX_LENGTH), step=10, key="tote_length" # Cast to int for number_input
 )
 tote_width_input = st.sidebar.number_input(
-    "Tote Width", min_value=50, value=config.TOTE_MAX_WIDTH, step=10, key="tote_width"
+    "Tote Width", min_value=50, value=int(config.TOTE_MAX_WIDTH), step=10, key="tote_width" # Cast to int
 )
 tote_height_input = st.sidebar.number_input(
-    "Tote Height", min_value=50, value=config.TOTE_MAX_HEIGHT, step=10, key="tote_height"
+    "Tote Height", min_value=50, value=int(config.TOTE_MAX_HEIGHT), step=10, key="tote_height" # Cast to int
 )
 height_map_resolution_input = st.sidebar.number_input(
     "Height Map Resolution (mm)", min_value=1, value=config.HEIGHT_MAP_RESOLUTION, step=1, key="height_map_resolution"
@@ -110,16 +111,15 @@ case_data_source = st.sidebar.radio(
     "Select case data source:",
     ("Generate Random Cases", "Upload CSV File"),
     key="case_data_source",
-    on_change=reset_sim_ran_on_source_change 
+    on_change=reset_sim_ran_on_source_change
 )
 
 if case_data_source == "Generate Random Cases":
     # If switching from CSV to Random, clear CSV-related session state
-    if st.session_state.uploaded_file_name is not None: 
+    if st.session_state.uploaded_file_name is not None:
         st.session_state.csv_headers = []
         st.session_state.column_mappings = {k: None for k in st.session_state.column_mappings}
         st.session_state.uploaded_file_name = None
-        # st.session_state.case_csv_uploader = None # May be needed if uploader value persists
 
     st.sidebar.subheader("Random Case Generation")
     num_random_cases_input = st.sidebar.number_input(
@@ -131,24 +131,25 @@ if case_data_source == "Generate Random Cases":
 else: # "Upload CSV File"
     st.sidebar.subheader("Upload Case Data")
     uploaded_file = st.sidebar.file_uploader(
-        "Upload Case Data CSV", type=["csv"], key="case_csv_uploader" 
+        "Upload Case Data CSV", type=["csv"], key="case_csv_uploader"
     )
 
     if uploaded_file is not None:
         if st.session_state.uploaded_file_name != uploaded_file.name:
             st.session_state.uploaded_file_name = uploaded_file.name
             try:
+                # Read only the header row first to get column names for mapping
                 df_headers = pd.read_csv(uploaded_file, nrows=0)
                 st.session_state.csv_headers = df_headers.columns.tolist()
                 st.session_state.column_mappings = {k: None for k in st.session_state.column_mappings}
-                uploaded_file.seek(0) 
+                uploaded_file.seek(0) # Reset file pointer for next read
                 st.sidebar.success(f"File '{uploaded_file.name}' loaded. Map columns below.")
             except Exception as e:
                 st.sidebar.error(f"Error reading CSV headers: {e}")
-                st.session_state.csv_headers = [] 
-                st.session_state.uploaded_file_name = None 
+                st.session_state.csv_headers = []
+                st.session_state.uploaded_file_name = None
     else:
-        if st.session_state.uploaded_file_name is not None:
+        if st.session_state.uploaded_file_name is not None: # If a file was previously loaded but now removed
             st.session_state.csv_headers = []
             st.session_state.column_mappings = {k: None for k in st.session_state.column_mappings}
             st.session_state.uploaded_file_name = None
@@ -159,9 +160,9 @@ else: # "Upload CSV File"
             prev_selection = st.session_state.column_mappings.get(col_key)
             if prev_selection and prev_selection in options_list:
                 return options_list.index(prev_selection)
-            try: 
+            try:
                 return min(default_idx, len(options_list) -1) if options_list else 0
-            except ValueError: 
+            except ValueError:
                 return 0
 
         st.session_state.column_mappings['length_col'] = st.sidebar.selectbox(
@@ -179,15 +180,15 @@ else: # "Upload CSV File"
         sku_options = ["Auto-generate SKU"] + st.session_state.csv_headers
         st.session_state.column_mappings['sku_col'] = st.sidebar.selectbox(
             "SKU Column (Optional):", options=sku_options,
-            index=get_col_index('sku_col', sku_options, 0), key="map_sku" 
+            index=get_col_index('sku_col', sku_options, 0), key="map_sku"
         )
-    elif uploaded_file and not st.session_state.csv_headers: 
+    elif uploaded_file and not st.session_state.csv_headers: # If file uploaded but headers couldn't be read
         st.sidebar.warning("Could not read columns. Check CSV format or re-upload.")
 
 
 # --- Run Simulation Button ---
 if st.sidebar.button("Run Simulation", key="run_button", type="primary"):
-    st.session_state.simulation_ran = False 
+    st.session_state.simulation_ran = False
     st.session_state.simulation_results = {'visualization_output_list': [], 'full_totes_summary_data': []}
     st.session_state.original_item_count = 0 # Reset item count
 
@@ -202,73 +203,87 @@ if st.sidebar.button("Run Simulation", key="run_button", type="primary"):
     }
 
     simulation_can_proceed = False
-    current_input_cases = [] 
+    current_input_cases = []
 
     if case_data_source == "Generate Random Cases":
         with st.spinner("Generating test cases..."):
             current_input_cases = simulation.generate_test_cases(
                 num_cases=int(num_random_cases_input),
                 seed=int(random_seed_input),
-                current_tote_config=dynamic_tote_config 
+                current_tote_config=dynamic_tote_config
             )
         if current_input_cases:
             st.session_state.original_item_count = len(current_input_cases)
             simulation_can_proceed = True
         else:
             st.warning("No random cases were generated.")
-    
+
     elif case_data_source == "Upload CSV File":
-        if uploaded_file is not None: 
+        if uploaded_file is not None:
             len_col = st.session_state.column_mappings.get('length_col')
             wid_col = st.session_state.column_mappings.get('width_col')
             hei_col = st.session_state.column_mappings.get('height_col')
-            sku_col_map = st.session_state.column_mappings.get('sku_col') 
+            sku_col_map = st.session_state.column_mappings.get('sku_col')
 
-            if not all([len_col, wid_col, hei_col]): 
+            if not all([len_col, wid_col, hei_col]):
                 st.error("Column mapping incomplete. Please select columns for Length, Width, and Height in the sidebar.")
             else:
                 try:
-                    uploaded_file.seek(0) 
-                    df = pd.read_csv(uploaded_file)
+                    uploaded_file.seek(0) # Ensure reading from the start of the file
+
+                    # Determine which columns to read from the CSV
+                    columns_to_read = []
+                    if len_col: columns_to_read.append(len_col)
+                    if wid_col: columns_to_read.append(wid_col)
+                    if hei_col: columns_to_read.append(hei_col)
+                    if sku_col_map and sku_col_map != "Auto-generate SKU":
+                        columns_to_read.append(sku_col_map)
                     
-                    required_mapped_cols = {'Length': len_col, 'Width': wid_col, 'Height': hei_col}
-                    valid_data = True
-                    for std_name, actual_col in required_mapped_cols.items():
-                        if actual_col not in df.columns:
-                            st.error(f"Mapped column '{actual_col}' for {std_name} not found in CSV. Please check mappings or CSV file.")
-                            valid_data = False; break
-                        if not pd.api.types.is_numeric_dtype(df[actual_col]):
-                            st.error(f"Column '{actual_col}' (mapped to {std_name}) must contain numeric values.")
-                            valid_data = False; break
-                        if not (df[actual_col] > 0).all(): 
-                            st.error(f"All values in column '{actual_col}' (mapped to {std_name}) must be positive.")
-                            valid_data = False; break
+                    # Remove duplicates in case a column was mapped to multiple roles (unlikely but safe)
+                    columns_to_read = list(set(columns_to_read))
+
+                    if not columns_to_read or not all(c in st.session_state.csv_headers for c in [len_col, wid_col, hei_col]):
+                        st.error("One or more essential mapped columns (Length, Width, Height) are not in the CSV headers. Please check mappings.")
+                    else:
+                        # Read only the specified columns
+                        df = pd.read_csv(uploaded_file, usecols=columns_to_read)
                     
-                    if valid_data:
-                        for index, row in df.iterrows():
-                            sku_val = f"CSV_SKU_{index+1}" 
-                            if sku_col_map and sku_col_map != "Auto-generate SKU":
-                                if sku_col_map in df.columns: 
-                                    sku_val = str(row[sku_col_map]) 
-                                else: 
-                                    st.warning(f"SKU column '{sku_col_map}' selected in mapping but not found in CSV. Using auto-generated SKU for row {index+1}.")
-                            
-                            current_input_cases.append({
-                                "sku": sku_val,
-                                "length": float(row[len_col]),
-                                "width": float(row[wid_col]),
-                                "height": float(row[hei_col])
-                            })
-                        st.session_state.original_item_count = len(current_input_cases)
-                        simulation_can_proceed = True
+                        # Validate data types and values for essential columns
+                        required_mapped_cols = {'Length': len_col, 'Width': wid_col, 'Height': hei_col}
+                        valid_data = True
+                        for std_name, actual_col in required_mapped_cols.items():
+                            if actual_col not in df.columns: # Should be caught by previous check, but good for safety
+                                st.error(f"Mapped column '{actual_col}' for {std_name} not found in loaded CSV data. This should not happen.")
+                                valid_data = False; break
+                            if not pd.api.types.is_numeric_dtype(df[actual_col]):
+                                st.error(f"Column '{actual_col}' (mapped to {std_name}) must contain numeric values.")
+                                valid_data = False; break
+                            if not (df[actual_col] > 0).all():
+                                st.error(f"All values in column '{actual_col}' (mapped to {std_name}) must be positive.")
+                                valid_data = False; break
+
+                        if valid_data:
+                            for index, row in df.iterrows():
+                                sku_val = f"CSV_SKU_{index+1}"
+                                if sku_col_map and sku_col_map != "Auto-generate SKU" and sku_col_map in df.columns:
+                                    sku_val = str(row[sku_col_map])
+                                # If sku_col_map was "Auto-generate SKU" or not in df.columns (e.g. not read), sku_val remains auto-generated
+
+                                current_input_cases.append({
+                                    "sku": sku_val,
+                                    "length": float(row[len_col]),
+                                    "width": float(row[wid_col]),
+                                    "height": float(row[hei_col])
+                                })
+                            st.session_state.original_item_count = len(current_input_cases)
+                            simulation_can_proceed = True
                 except Exception as e:
                     st.error(f"Error processing CSV file with mapped columns: {e}")
         else:
             st.error("Please upload a CSV file when 'Upload CSV File' source is selected.")
 
     if simulation_can_proceed and current_input_cases:
-        # We don't need main_results_area.empty() anymore as content will be drawn sequentially
-        st.header("Simulation Process & Results") # This header will appear once
+        st.header("Simulation Process & Results")
         with st.spinner("Running packing simulation... This may take a moment."):
             sim_vis_data, full_totes_summary = simulation.run_simulation_for_visualization_data(
                 case_data_list=current_input_cases,
@@ -276,91 +291,150 @@ if st.sidebar.button("Run Simulation", key="run_button", type="primary"):
             )
             st.session_state.simulation_results['visualization_output_list'] = sim_vis_data
             st.session_state.simulation_results['full_totes_summary_data'] = full_totes_summary
-            st.session_state.simulation_ran = True 
-        st.success("Simulation finished!") 
-            
-    elif simulation_can_proceed and not current_input_cases: 
+            st.session_state.simulation_ran = True
+        st.success("Simulation finished!")
+
+    elif simulation_can_proceed and not current_input_cases:
          st.warning("No case data was generated or loaded. Please check your inputs.")
     elif not simulation_can_proceed and (case_data_source == "Upload CSV File" and not uploaded_file and st.session_state.column_mappings.get('length_col')):
-        pass 
-    elif not simulation_can_proceed and current_input_cases: 
+        pass # Avoid error if mappings exist but file is removed before run
+    elif not simulation_can_proceed and current_input_cases: # Should be caught by specific errors above
         st.error("Simulation cannot proceed despite having case data. Check error messages above in the main panel or sidebar.")
 
 
 # --- Display Results (Statistics first, then individual totes) ---
 if st.session_state.simulation_ran:
     full_totes_summary_data = st.session_state.simulation_results['full_totes_summary_data']
+    visualization_output_list = st.session_state.simulation_results['visualization_output_list']
 
-    # --- Overall Statistics Section (Moved Up) ---
-    if full_totes_summary_data: # Only show stats if there's data
-        st.subheader("Overall Tote Utilization Statistics")
-        
-        # Calculate utilization percentages
-        utilization_percentages = [tote.get('utilization_percent', 0.0) for tote in full_totes_summary_data if tote.get('utilization_percent') is not None]
-        
-        # Calculate additional statistics
-        totes_with_one_item = sum(1 for tote in full_totes_summary_data if len(tote.get('items', [])) == 1)
-        
+
+    # --- Overall Statistics Section ---
+    if full_totes_summary_data:
+        st.subheader("Overall Simulation Statistics")
+
+        # Pre-calculate all necessary values
+        utilization_percentages = [
+            tote.get('utilization_percent', 0.0)
+            for tote in full_totes_summary_data
+            if tote.get('utilization_percent') is not None
+        ]
+        total_totes_used = len(full_totes_summary_data)
         total_items_placed_in_stats = sum(len(tote.get('items',[])) for tote in full_totes_summary_data)
         unplaced_items_count = 0
         if 'original_item_count' in st.session_state and st.session_state.original_item_count >= total_items_placed_in_stats:
             unplaced_items_count = st.session_state.original_item_count - total_items_placed_in_stats
         
-        if utilization_percentages: # Proceed if there's data for primary stats
-            avg_util = statistics.mean(utilization_percentages)
-            min_util = min(utilization_percentages)
-            max_util = max(utilization_percentages) 
-            median_util = statistics.median(utilization_percentages)
-            
-            stats_col1, stats_col2 = st.columns(2)
-            with stats_col1:
-                st.metric(label="Average Tote Utilization", value=f"{avg_util:.2f}%")
-                st.metric(label="Minimum Tote Utilization", value=f"{min_util:.2f}%")
-            with stats_col2:
-                st.metric(label="Maximum Tote Utilization", value=f"{max_util:.2f}%") 
-                st.metric(label="Median Tote Utilization", value=f"{median_util:.2f}%")
+        avg_items_per_tote = (total_items_placed_in_stats / total_totes_used) if total_totes_used > 0 else 0.0
+        totes_with_one_item = sum(1 for tote in full_totes_summary_data if len(tote.get('items', [])) == 1)
+        percentage_single_case_totes = (totes_with_one_item / total_totes_used * 100) if total_totes_used > 0 else 0.0
 
-            # Display additional statistics in a new row of columns
-            stats_col3, stats_col4 = st.columns(2)
-            with stats_col3:
-                st.metric(label="Totes with Single Case", value=f"{totes_with_one_item}")
-            with stats_col4:
-                st.metric(label="Cases That Did Not Fit", value=f"{unplaced_items_count}")
+        all_placed_skus_list = []
+        sku_to_totes_map = defaultdict(set)
+        for tote in full_totes_summary_data:
+            tote_id = tote.get('id', 'UnknownTote')
+            for item in tote.get('items', []):
+                sku = item.get('sku', 'UnknownSKU')
+                all_placed_skus_list.append(sku)
+                sku_to_totes_map[sku].add(tote_id)
+        num_unique_skus_placed = len(sku_to_totes_map)
+        avg_totes_per_sku = 0.0
+        if num_unique_skus_placed > 0:
+            total_sku_presences_in_totes = sum(len(totes) for totes in sku_to_totes_map.values())
+            avg_totes_per_sku = total_sku_presences_in_totes / num_unique_skus_placed
+        most_frequent_sku_str = "N/A"
+        if all_placed_skus_list:
+            sku_counts = Counter(all_placed_skus_list)
+            most_common_sku, most_common_count = sku_counts.most_common(1)[0]
+            most_frequent_sku_str = f"{most_common_sku} (Count: {most_common_count})"
 
-            # Histogram of Tote Utilization
-            st.markdown("###### Distribution of Tote Utilizations")
-        elif full_totes_summary_data: # Case where there are totes, but no utilization % (e.g. all empty, though unlikely with current logic)
-            # Still display the counts if totes exist
-            stats_col3, stats_col4 = st.columns(2)
-            with stats_col3:
-                st.metric(label="Totes with Single Case", value=f"{totes_with_one_item}")
-            with stats_col4:
-                st.metric(label="Cases That Did Not Fit", value=f"{unplaced_items_count}")
-            st.write("No utilization data to display for average, min, max, median, or histogram.")
-            # Further reduce figsize and adjust fonts for a much smaller histogram
-            fig_hist, ax_hist = plt.subplots(figsize=(3.0, 1.75)) # Significantly smaller
+        # --- Group 1: Packing Efficiency & Tote Performance ---
+        st.markdown("###### Packing Efficiency & Tote Performance")
+        
+        perf_data = [
+            {"Metric": "Total Totes Used", "Value": str(total_totes_used)},
+            {"Metric": "Total Cases Placed", "Value": str(total_items_placed_in_stats)},
+            {"Metric": "Cases That Did Not Fit", "Value": str(unplaced_items_count)},
+            {"Metric": "Average Items per Tote", "Value": f"{avg_items_per_tote:.2f}"},
+            {"Metric": "Single-Case Totes (Count)", "Value": str(totes_with_one_item)},
+            {"Metric": "Single-Case Totes (%)", "Value": f"{percentage_single_case_totes:.2f}%"},
+        ]
+        if utilization_percentages:
+            perf_data.extend([
+                {"Metric": "Average Tote Utilization", "Value": f"{statistics.mean(utilization_percentages):.2f}%"},
+                {"Metric": "Minimum Tote Utilization", "Value": f"{min(utilization_percentages):.2f}%"},
+                {"Metric": "Median Tote Utilization", "Value": f"{statistics.median(utilization_percentages):.2f}%"},
+                {"Metric": "Maximum Tote Utilization", "Value": f"{max(utilization_percentages):.2f}%"},
+            ])
+        
+        perf_df = pd.DataFrame(perf_data)
+        st.table(perf_df.set_index('Metric')) # Using st.table for a cleaner look
+
+        if utilization_percentages:
+            st.markdown("###### Distribution of Tote Utilizations") # Sub-heading for histogram
+            fig_hist, ax_hist = plt.subplots(figsize=(4.0, 2.25)) # Slightly larger for table context
             ax_hist.hist(utilization_percentages, bins='auto', color='skyblue', edgecolor='black')
-            ax_hist.set_title('Tote Utilization %', fontsize=7) # Shorter title, smaller font
-            ax_hist.set_xlabel('Utilization %', fontsize=6) 
-            ax_hist.set_ylabel('No. of Totes', fontsize=6) # Shorter label
-            ax_hist.tick_params(axis='both', which='major', labelsize=5) 
-            fig_hist.tight_layout(pad=0.3) # Adjust padding
-            st.pyplot(fig_hist, use_container_width=False) # IMPORTANT: use_container_width=False
-            plt.close(fig_hist) # Close the histogram figure
-
+            ax_hist.set_title('Tote Utilization %', fontsize=9)
+            ax_hist.set_xlabel('Utilization %', fontsize=8)
+            ax_hist.set_ylabel('No. of Totes', fontsize=8)
+            ax_hist.tick_params(axis='both', which='major', labelsize=7)
+            fig_hist.tight_layout(pad=0.5)
+            st.pyplot(fig_hist, use_container_width=False) 
+            plt.close(fig_hist)
         else:
-            st.write("No utilization data available to calculate statistics or plot histogram.")
-        st.divider() # Divider after stats
+            st.write("No utilization percentage data available for detailed utilization statistics or histogram.")
+
+        # --- Group 2: SKU Distribution & Insights ---
+        st.markdown("---") 
+        st.markdown("###### SKU Distribution & Insights")
+        
+        sku_data = [
+            {"Metric": "Total Unique SKUs Placed", "Value": str(num_unique_skus_placed)},
+            {"Metric": "Avg. Totes per SKU", "Value": f"{avg_totes_per_sku:.2f}"},
+            {"Metric": "Most Frequent SKU", "Value": most_frequent_sku_str},
+        ]
+        sku_df = pd.DataFrame(sku_data)
+        st.table(sku_df.set_index('Metric'))
+
+        # --- Export Report ---
+        st.markdown("---")
+        st.markdown("###### Export Full Pack Report")
+        if visualization_output_list:
+            report_data = []
+            for item_vis_data in visualization_output_list:
+                report_data.append({
+                    "Tote ID": item_vis_data.get('tote_id', 'N/A'),
+                    "SKU": item_vis_data.get('case_sku', 'N/A'),
+                    "Placed Length (mm)": item_vis_data.get('placed_case_dims_mm', {}).get('length', 'N/A'),
+                    "Placed Width (mm)": item_vis_data.get('placed_case_dims_mm', {}).get('width', 'N/A'),
+                    "Placed Height (mm)": item_vis_data.get('placed_case_dims_mm', {}).get('height', 'N/A'),
+                    "Position X (mm)": item_vis_data.get('position_mm', {}).get('x', 'N/A'),
+                    "Position Y (mm)": item_vis_data.get('position_mm', {}).get('y', 'N/A'),
+                    "Position Z (mm)": item_vis_data.get('position_mm', {}).get('z', 'N/A'),
+                })
+            report_df = pd.DataFrame(report_data)
+            
+            csv_export = report_df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="Download Full Pack Report (CSV)",
+                data=csv_export,
+                file_name="bin_packing_report.csv",
+                mime="text/csv",
+                key="download_report_csv"
+            )
+        else:
+            st.caption("No packing data available to generate a report.")
+
+
+        st.divider() # Divider after the statistics section
 
     # --- Tote Utilization Summary & Visualization (Individual Totes) ---
-    st.subheader("Individual Tote Details") 
+    st.subheader("Individual Tote Details")
     if not full_totes_summary_data:
         st.write("No totes were used or processed in the simulation (e.g., no items to pack or items too large for the configured tote).")
     else:
         if st.session_state.original_item_count > 0 :
              st.caption(f"Displaying packing results for {st.session_state.original_item_count} input items.")
-        else: 
-            # This path might be less common if original_item_count is always set
+        else:
             total_items_placed_for_caption = sum(len(tote.get('items',[])) for tote in full_totes_summary_data)
             if total_items_placed_for_caption > 0:
                 st.caption(f"Displaying packing results for {total_items_placed_for_caption} items placed in totes.")
@@ -368,24 +442,24 @@ if st.session_state.simulation_ran:
         # Sorting options for individual totes
         sort_container = st.container()
         with sort_container:
-            scol1, scol2 = st.columns([0.6, 0.4]) 
+            scol1, scol2 = st.columns([0.6, 0.4])
             with scol1:
                 sort_by_key = st.selectbox(
                     "Sort totes by:",
                     options=["Default (Tote ID)", "Utilization", "Number of Items"],
-                    index=0, 
-                    key="tote_sort_by_selection" 
+                    index=0,
+                    key="tote_sort_by_selection"
                 )
             with scol2:
                 sort_order_asc_desc = st.radio(
                     "Order:",
                     options=["Ascending", "Descending"],
-                    index=0, 
+                    index=0,
                     key="tote_sort_order_selection",
                     horizontal=True
                 )
-        
-        processed_totes_data = list(full_totes_summary_data) 
+
+        processed_totes_data = list(full_totes_summary_data)
         is_descending_sort = (sort_order_asc_desc == "Descending")
 
         if sort_by_key == "Utilization":
@@ -394,43 +468,43 @@ if st.session_state.simulation_ran:
             processed_totes_data.sort(key=lambda t: len(t.get('items', [])), reverse=is_descending_sort)
         elif sort_by_key == "Default (Tote ID)":
             def get_tote_id_sort_key(tote_info):
-                tote_id = tote_info.get('id', '') # Default to empty string if no id
+                tote_id = tote_info.get('id', '')
                 if isinstance(tote_id, str) and tote_id.lower().startswith("tote_"):
                     try:
                         return int(tote_id.split("_")[1])
-                    except (IndexError, ValueError): # Fallback for non-standard "Tote_X" formats
-                        return str(tote_id).lower() # Sort as string
+                    except (IndexError, ValueError):
+                        return str(tote_id).lower()
                 elif isinstance(tote_id, (int, float)):
                     return tote_id
-                return str(tote_id).lower() # Fallback to case-insensitive string sort
+                return str(tote_id).lower()
 
             processed_totes_data.sort(key=get_tote_id_sort_key, reverse=is_descending_sort)
-        
-        for i, tote_summary_info in enumerate(processed_totes_data): # Iterate over sorted data
-            tote_id_str = str(tote_summary_info.get('id', f'OriginalIndex_{i+1}')) # Use a fallback that indicates original index if ID is missing
-            items_in_tote = tote_summary_info.get('items', []) 
+
+        for i, tote_summary_info in enumerate(processed_totes_data):
+            tote_id_str = str(tote_summary_info.get('id', f'OriginalIndex_{i+1}'))
+            items_in_tote = tote_summary_info.get('items', [])
             items_packed_count = len(items_in_tote)
             utilization = tote_summary_info.get('utilization_percent', 0.0)
 
             with st.expander(f"Tote ID: {tote_id_str} | Items: {items_packed_count} | Utilization: {utilization:.2f}%", expanded=False):
-                
-                col1, col2 = st.columns([2, 1]) 
 
-                with col1: 
-                    st.markdown("###### 3D View") 
-                    if items_packed_count > 0: 
+                col1, col2 = st.columns([2, 1])
+
+                with col1:
+                    st.markdown("###### 3D View")
+                    if items_packed_count > 0:
                         with st.spinner(f"Generating visualization for Tote {tote_id_str}..."):
-                            fig = visualization.generate_tote_figure(tote_summary_info) 
+                            fig = visualization.generate_tote_figure(tote_summary_info)
                             if fig:
-                                st.pyplot(fig, clear_figure=True) 
-                                plt.close(fig) 
+                                st.pyplot(fig, clear_figure=True)
+                                plt.close(fig)
                             else:
                                 st.warning("Could not generate visualization figure for this tote.")
                     else:
                         st.caption("No items in this tote to visualize.")
-                
-                with col2: 
-                    st.markdown("###### Packed Item Details") 
+
+                with col2:
+                    st.markdown("###### Packed Item Details")
                     if items_in_tote:
                         item_details_list = []
                         for item in items_in_tote:
@@ -441,20 +515,20 @@ if st.session_state.simulation_ran:
                                 "Width": dims[1] if dims[1] is not None else 'N/A',
                                 "Height": dims[2] if dims[2] is not None else 'N/A'
                             })
-                        
+
                         item_details_df = pd.DataFrame(item_details_list)
                         try:
                             item_details_df['Length'] = pd.to_numeric(item_details_df['Length'], errors='coerce').round(1)
                             item_details_df['Width'] = pd.to_numeric(item_details_df['Width'], errors='coerce').round(1)
                             item_details_df['Height'] = pd.to_numeric(item_details_df['Height'], errors='coerce').round(1)
-                        except Exception: 
-                            pass 
+                        except Exception:
+                            pass
 
                         st.dataframe(
-                            item_details_df, 
-                            height=min(350, (len(item_details_list) + 1) * 35 + 3), 
+                            item_details_df,
+                            height=min(350, (len(item_details_list) + 1) * 35 + 3),
                             use_container_width=True
-                        ) 
+                        )
                     else:
                         st.caption("No items in this tote.")
 elif not st.sidebar.button("Run Simulation", key="initial_info_trigger_dummy", disabled=True, help="This is a hidden button to ensure this block runs only if sim not run"):
