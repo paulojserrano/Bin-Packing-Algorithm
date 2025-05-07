@@ -294,9 +294,19 @@ if st.session_state.simulation_ran:
     # --- Overall Statistics Section (Moved Up) ---
     if full_totes_summary_data: # Only show stats if there's data
         st.subheader("Overall Tote Utilization Statistics")
+        
+        # Calculate utilization percentages
         utilization_percentages = [tote.get('utilization_percent', 0.0) for tote in full_totes_summary_data if tote.get('utilization_percent') is not None]
         
-        if utilization_percentages:
+        # Calculate additional statistics
+        totes_with_one_item = sum(1 for tote in full_totes_summary_data if len(tote.get('items', [])) == 1)
+        
+        total_items_placed_in_stats = sum(len(tote.get('items',[])) for tote in full_totes_summary_data)
+        unplaced_items_count = 0
+        if 'original_item_count' in st.session_state and st.session_state.original_item_count >= total_items_placed_in_stats:
+            unplaced_items_count = st.session_state.original_item_count - total_items_placed_in_stats
+        
+        if utilization_percentages: # Proceed if there's data for primary stats
             avg_util = statistics.mean(utilization_percentages)
             min_util = min(utilization_percentages)
             max_util = max(utilization_percentages) 
@@ -310,8 +320,23 @@ if st.session_state.simulation_ran:
                 st.metric(label="Maximum Tote Utilization", value=f"{max_util:.2f}%") 
                 st.metric(label="Median Tote Utilization", value=f"{median_util:.2f}%")
 
+            # Display additional statistics in a new row of columns
+            stats_col3, stats_col4 = st.columns(2)
+            with stats_col3:
+                st.metric(label="Totes with Single Case", value=f"{totes_with_one_item}")
+            with stats_col4:
+                st.metric(label="Cases That Did Not Fit", value=f"{unplaced_items_count}")
+
             # Histogram of Tote Utilization
             st.markdown("###### Distribution of Tote Utilizations")
+        elif full_totes_summary_data: # Case where there are totes, but no utilization % (e.g. all empty, though unlikely with current logic)
+            # Still display the counts if totes exist
+            stats_col3, stats_col4 = st.columns(2)
+            with stats_col3:
+                st.metric(label="Totes with Single Case", value=f"{totes_with_one_item}")
+            with stats_col4:
+                st.metric(label="Cases That Did Not Fit", value=f"{unplaced_items_count}")
+            st.write("No utilization data to display for average, min, max, median, or histogram.")
             # Further reduce figsize and adjust fonts for a much smaller histogram
             fig_hist, ax_hist = plt.subplots(figsize=(3.0, 1.75)) # Significantly smaller
             ax_hist.hist(utilization_percentages, bins='auto', color='skyblue', edgecolor='black')
@@ -335,12 +360,54 @@ if st.session_state.simulation_ran:
         if st.session_state.original_item_count > 0 :
              st.caption(f"Displaying packing results for {st.session_state.original_item_count} input items.")
         else: 
-            total_items_placed = sum(len(tote.get('items',[])) for tote in full_totes_summary_data)
-            if total_items_placed > 0:
-                st.caption(f"Displaying packing results for {total_items_placed} items placed in totes.")
+            # This path might be less common if original_item_count is always set
+            total_items_placed_for_caption = sum(len(tote.get('items',[])) for tote in full_totes_summary_data)
+            if total_items_placed_for_caption > 0:
+                st.caption(f"Displaying packing results for {total_items_placed_for_caption} items placed in totes.")
 
-        for i, tote_summary_info in enumerate(full_totes_summary_data):
-            tote_id_str = str(tote_summary_info.get('id', f'Tote_{i+1}')) 
+        # Sorting options for individual totes
+        sort_container = st.container()
+        with sort_container:
+            scol1, scol2 = st.columns([0.6, 0.4]) 
+            with scol1:
+                sort_by_key = st.selectbox(
+                    "Sort totes by:",
+                    options=["Default (Tote ID)", "Utilization", "Number of Items"],
+                    index=0, 
+                    key="tote_sort_by_selection" 
+                )
+            with scol2:
+                sort_order_asc_desc = st.radio(
+                    "Order:",
+                    options=["Ascending", "Descending"],
+                    index=0, 
+                    key="tote_sort_order_selection",
+                    horizontal=True
+                )
+        
+        processed_totes_data = list(full_totes_summary_data) 
+        is_descending_sort = (sort_order_asc_desc == "Descending")
+
+        if sort_by_key == "Utilization":
+            processed_totes_data.sort(key=lambda t: t.get('utilization_percent', 0.0), reverse=is_descending_sort)
+        elif sort_by_key == "Number of Items":
+            processed_totes_data.sort(key=lambda t: len(t.get('items', [])), reverse=is_descending_sort)
+        elif sort_by_key == "Default (Tote ID)":
+            def get_tote_id_sort_key(tote_info):
+                tote_id = tote_info.get('id', '') # Default to empty string if no id
+                if isinstance(tote_id, str) and tote_id.lower().startswith("tote_"):
+                    try:
+                        return int(tote_id.split("_")[1])
+                    except (IndexError, ValueError): # Fallback for non-standard "Tote_X" formats
+                        return str(tote_id).lower() # Sort as string
+                elif isinstance(tote_id, (int, float)):
+                    return tote_id
+                return str(tote_id).lower() # Fallback to case-insensitive string sort
+
+            processed_totes_data.sort(key=get_tote_id_sort_key, reverse=is_descending_sort)
+        
+        for i, tote_summary_info in enumerate(processed_totes_data): # Iterate over sorted data
+            tote_id_str = str(tote_summary_info.get('id', f'OriginalIndex_{i+1}')) # Use a fallback that indicates original index if ID is missing
             items_in_tote = tote_summary_info.get('items', []) 
             items_packed_count = len(items_in_tote)
             utilization = tote_summary_info.get('utilization_percent', 0.0)
@@ -392,4 +459,3 @@ if st.session_state.simulation_ran:
                         st.caption("No items in this tote.")
 elif not st.sidebar.button("Run Simulation", key="initial_info_trigger_dummy", disabled=True, help="This is a hidden button to ensure this block runs only if sim not run"):
     st.info("Configure parameters in the sidebar and click 'Run Simulation' to begin and see results.")
-

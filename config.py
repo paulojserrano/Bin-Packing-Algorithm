@@ -1,7 +1,7 @@
 import math
 
 # --- Global Configuration ---
-TOTE_MAX_LENGTH = round(31.5 * 25.4)
+TOTE_MAX_LENGTH = 31.5*25.4
 TOTE_MAX_WIDTH = round(24*25.4)
 TOTE_MAX_HEIGHT = round(22.4*25.4)
 TOTE_MAX_VOLUME = TOTE_MAX_LENGTH * TOTE_MAX_WIDTH * TOTE_MAX_HEIGHT
