@@ -1039,7 +1039,7 @@ if results_to_display:
             st.download_button(
                 label="Download Full Pack Report (HTML)",
                 data=html_export_styled,
-                file_name="bin_packing_report_styled.html",
+                file_name="bin_packing_report.html",
                 mime="text/html",
                 key="download_report_html_styled"
             )
