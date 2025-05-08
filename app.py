@@ -6,6 +6,8 @@ import matplotlib.pyplot as plt # Added for plt.close() and histogram
 import statistics # For median
 import numpy as np # For histogram binning and other calculations if needed
 from collections import Counter, defaultdict # For new statistics
+import io # Added for Task 2
+import base64 # Added for Task 2
 
 # Import existing modules from the project
 import simulation
@@ -57,6 +59,8 @@ st.divider() # Adds a visual separator
 
 # --- Initialize Session State ---
 # For CSV column mapping
+if 'csv_sampling_method' not in st.session_state: # Added for CSV random/sequential
+    st.session_state.csv_sampling_method = 'Sequential'
 if 'csv_headers' not in st.session_state:
     st.session_state.csv_headers = []
 if 'column_mappings' not in st.session_state:
@@ -72,7 +76,8 @@ if 'simulation_ran' not in st.session_state:
 if 'simulation_results' not in st.session_state:
     st.session_state.simulation_results = {
         'visualization_output_list': [],
-        'full_totes_summary_data': []
+        'full_totes_summary_data': [],
+        'unplaceable_items_log': [] # Added for unplaced items
     }
 if 'original_item_count' not in st.session_state: # To store original item count for captions
     st.session_state.original_item_count = 0
@@ -96,37 +101,176 @@ if 'current_tote_config_for_report' not in st.session_state: # For HTML report
 
 
 # --- HTML Report Generation Function ---
-def generate_styled_html_report(report_df, summary_stats_dict, tote_config):
+def generate_styled_html_report(report_df, summary_stats_dict, tote_config, all_totes_data, unplaceable_items_log): # Added unplaceable_items_log
     report_title = "Bin Packing Simulation Report"
     generation_time = pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
 
     html_style = """
     <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 0; background-color: #f4f7f6; color: #333; line-height: 1.6; }
-        .report-container { max-width: 1000px; margin: 20px auto; background-color: #fff; padding: 30px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
-        h1 { color: #2c3e50; text-align: center; border-bottom: 3px solid #3498db; padding-bottom: 15px; margin-bottom: 25px; font-size: 2em; }
-        h2 { color: #34495e; margin-top: 35px; border-bottom: 2px solid #5dade2; padding-bottom: 8px; font-size: 1.6em;}
-        .summary-table, .details-table { width: 100%; border-collapse: collapse; margin-top: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
-        .summary-table th, .summary-table td, .details-table th, .details-table td {
-            border: 1px solid #ddd; padding: 12px 15px; text-align: left; font-size: 0.95em;
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f8f9fa; /* Lighter overall background */
+            color: #212529; /* Darker base text color */
+            line-height: 1.6;
         }
-        .summary-table th { background-color: #3498db; color: white; font-weight: bold; }
-        .details-table th { background-color: #5dade2; color: white; font-weight: bold; }
-        .summary-table td:first-child { font-weight: bold; background-color: #ecf0f1; width: 40%; }
-        .footer { text-align: center; margin-top: 40px; padding-top: 20px; border-top: 1px solid #bdc3c7; font-size: 0.9em; color: #7f8c8d; }
-        .section { margin-bottom: 35px; padding: 15px; background-color: #fdfefe; border-radius: 5px; border: 1px solid #e0e0e0;}
-        .section-title { margin-bottom: 15px; }
-        .config-details p, .overall-stats p { margin: 8px 0; font-size: 1em; }
-        .config-details strong, .overall-stats strong { color: #2980b9; min-width: 200px; display: inline-block;}
-        table { page-break-inside: auto; }
+        .report-container {
+            max-width: 1100px;
+            margin: 25px auto;
+            background-color: #ffffff;
+            padding: 35px;
+            border-radius: 10px; /* Softer corners */
+            box-shadow: 0 6px 18px rgba(0,0,0,0.07); /* More subtle shadow */
+        }
+        h1 {
+            color: #343a40;
+            text-align: center;
+            border-bottom: 2px solid #007bff; /* Example primary accent color */
+            padding-bottom: 20px;
+            margin-bottom: 30px;
+            font-size: 2.2em;
+            font-weight: 600;
+        }
+        h2 { /* Section titles like "Overall Packing Statistics" */
+            color: #495057;
+            margin-top: 40px;
+            border-bottom: 1px solid #dee2e6; /* Lighter heading border */
+            padding-bottom: 12px;
+            font-size: 1.75em;
+            font-weight: 500;
+        }
+        h3 { /* For sub-headings if any, or specific tote titles if not in summary */
+            color: #007bff;
+            margin-top: 20px;
+            font-size: 1.3em;
+        }
+        h4 { /* For "Packed Items:" sub-header */
+            color: #6c757d;
+            margin-top: 15px;
+            margin-bottom: 8px;
+            font-size: 1.1em;
+            font-weight: 500;
+        }
+        .summary-table th, .details-table th {
+            background-color: #e9ecef; /* Lighter table header */
+            color: #212529;
+            font-weight: 600;
+            padding: 14px 18px;
+            text-align: left;
+        }
+        .summary-table td, .details-table td {
+            border: 1px solid #e0e0e0; /* Lighter table cell borders */
+            padding: 12px 18px;
+            font-size: 0.98em;
+            text-align: left;
+        }
+        .summary-table td:first-child { /* Key column in summary table */
+            font-weight: 500;
+            background-color: #f8f9fa;
+            width: 35%;
+        }
+        .footer {
+            text-align: center;
+            margin-top: 50px;
+            padding-top: 25px;
+            border-top: 1px solid #ced4da;
+            font-size: 0.95em;
+            color: #6c757d;
+        }
+        .section {
+            margin-bottom: 40px;
+            padding: 20px;
+            background-color: #fff;
+            border-radius: 6px;
+            border: 1px solid #e9ecef;
+        }
+        .config-details p, .overall-stats p {
+            margin: 10px 0;
+            font-size: 1.05em;
+        }
+        .config-details strong, .overall-stats strong {
+            color: #0056b3; /* Darker blue for emphasized text */
+            min-width: 220px; /* Adjust for alignment */
+            display: inline-block;
+            font-weight: 500;
+        }
+
+        /* Styles for Collapsible Tote Sections */
+        .tote-details-collapsible {
+            border: 1px solid #dee2e6;
+            border-radius: 6px;
+            margin-bottom: 15px;
+            background-color: #fff;
+            overflow: hidden; /* Prevents content spill during animation if any added later */
+        }
+        .tote-details-collapsible summary {
+            padding: 15px 20px;
+            background-color: #f8f9fa;
+            cursor: pointer;
+            font-weight: 500;
+            font-size: 1.1em;
+            color: #343a40;
+            border-bottom: 1px solid #dee2e6; /* Separator for summary */
+            transition: background-color 0.2s ease-in-out;
+            outline: none; /* Remove focus outline if not desired */
+        }
+        .tote-details-collapsible summary:hover {
+            background-color: #e9ecef;
+        }
+        .tote-details-collapsible[open] summary {
+            background-color: #e9ecef;
+            border-bottom: 1px solid #ced4da; /* Stronger border when open */
+        }
+        .tote-content { /* The div wrapping the collapsible content */
+            padding: 20px;
+            border-top: none; /* Ensure no double border with summary */
+        }
+        .tote-image-container {
+            text-align: center;
+            margin-bottom: 20px;
+            padding: 10px;
+            border: 1px solid #efefef;
+            border-radius: 4px;
+            background-color: #fdfdfd; /* Light background for image area */
+        }
+        .tote-image-container img {
+            max-width: 100%;
+            height: auto;
+            border-radius: 4px;
+        }
+
+        /* Optional: Style the default summary marker or hide it */
+        .tote-details-collapsible summary::-webkit-details-marker {
+            /* display: none; */ /* Uncomment to hide default arrow, then add custom one */
+        }
+        .tote-details-collapsible summary::before {
+            /* content: '► '; */ /* Custom closed marker */
+            /* margin-right: 5px; */
+        }
+        .tote-details-collapsible[open] summary::before {
+            /* content: '▼ '; */ /* Custom open marker */
+        }
+        
+        table { page-break-inside: auto; width: 100%; border-collapse: collapse; } /* Ensure tables don't break across pages if possible */
         tr { page-break-inside: avoid; page-break-after: auto; }
         thead { display: table-header-group; } /* For table header repeat on page break for printing */
+
+        /* Print-specific styles */
         @media print {
-            body { background-color: #fff; margin: 0; padding: 0;}
-            .report-container { box-shadow: none; border: none; margin: 0; max-width: 100%; padding: 10px;}
-            h1, h2 {color: #000;} /* Simpler colors for print */
-            .summary-table th, .details-table th {background-color: #eee !important; color: #000 !important;}
-            .summary-table td:first-child {background-color: #f5f5f5 !important;}
+            body { background-color: #fff; margin: 0; padding: 0; font-family: 'Times New Roman', Times, serif; }
+            .report-container { box-shadow: none; border: none; margin: 0; max-width: 100%; padding: 5px;}
+            h1, h2, h3, h4 { color: #000 !important; }
+            .summary-table th, .details-table th { background-color: #f0f0f0 !important; color: #000 !important; }
+            .tote-details-collapsible { border: 1px solid #ccc; }
+            .tote-details-collapsible summary { background-color: #f9f9f9 !important; border-bottom: 1px solid #ccc !important; }
+            .tote-details-collapsible[open] summary { border-bottom: 1px solid #ccc !important; }
+            .tote-content { padding: 10px; }
+            .tote-image-container { border: 1px solid #ddd; padding: 5px; margin-bottom: 10px; }
+            .tote-image-container img { max-width: 80%; /* Reduce image size for print if necessary */ }
+            details { page-break-inside: avoid; } /* Try to keep details block on one page */
+            details[open] > summary ~ * { display: block; } /* Ensure content of open details is visible */
+            details[open] { display: block; } /* Ensure details are open for printing */
         }
     </style>
     """
@@ -159,23 +303,281 @@ def generate_styled_html_report(report_df, summary_stats_dict, tote_config):
     html_content += f"<p><strong>Minimum Tote Utilization:</strong> {min_util_str}</p>"
     html_content += f"<p><strong>Median Tote Utilization:</strong> {median_util_str}</p>"
     html_content += f"<p><strong>Maximum Tote Utilization:</strong> {max_util_str}</p>"
-    html_content += "</div>"
 
-    # Section: Detailed Packing Report
-    html_content += "<div class='section'>"
-    html_content += "<h2 class='section-title'>Detailed Packing List per Tote</h2>"
-    if not report_df.empty:
-        # Group by Tote ID for better readability if multiple totes
-        if 'Tote ID' in report_df.columns:
-            for tote_id, group_df in report_df.groupby('Tote ID'):
-                html_content += f"<h3>Tote: {tote_id}</h3>"
-                html_content += group_df.to_html(index=False, escape=False, classes="details-table", border=0)
-                html_content += "<br>" # Add some space between tote tables
-        else: # Fallback if no Tote ID column (should not happen with current report_df)
-            html_content += report_df.to_html(index=False, escape=False, classes="details-table", border=0)
+    avg_items_str = f"{summary_stats_dict.get('avg_items_per_tote', 0.0):.2f}"
+    html_content += f"<p><strong>Average Items per Tote:</strong> {avg_items_str}</p>"
+    single_case_totes_count_str = str(summary_stats_dict.get('totes_with_one_item', 'N/A'))
+    html_content += f"<p><strong>Single-Case Totes (Count):</strong> {single_case_totes_count_str}</p>"
+    single_case_totes_perc_str = f"{summary_stats_dict.get('percentage_single_case_totes', 0.0):.2f}%"
+    html_content += f"<p><strong>Single-Case Totes (%):</strong> {single_case_totes_perc_str}</p>"
+    unique_skus_str = str(summary_stats_dict.get('num_unique_skus_placed', 'N/A'))
+    html_content += f"<p><strong>Total Unique SKUs Placed:</strong> {unique_skus_str}</p>"
+    avg_totes_sku_str = f"{summary_stats_dict.get('avg_totes_per_sku', 0.0):.2f}"
+    html_content += f"<p><strong>Avg. Totes per SKU:</strong> {avg_totes_sku_str}</p>"
+    most_freq_sku_str = str(summary_stats_dict.get('most_frequent_sku', 'N/A'))
+    html_content += f"<p><strong>Most Frequent SKU:</strong> {most_freq_sku_str}</p>"
+
+    utilization_percentages_for_hist = [
+        tote.get('utilization_percent', 0.0)
+        for tote in all_totes_data 
+        if tote.get('utilization_percent') is not None
+    ]
+    if utilization_percentages_for_hist:
+        html_content += "<h4 style='margin-top: 25px; margin-bottom: 10px; color: #495057;'>Distribution of Tote Utilizations:</h4>"
+        try:
+            fig_hist_report, ax_hist_report = plt.subplots(figsize=(6, 3.5)) 
+            ax_hist_report.hist(utilization_percentages_for_hist, bins='auto', color='cornflowerblue', edgecolor='black', alpha=0.75)
+            ax_hist_report.set_title('Tote Utilization Distribution', fontsize=11)
+            ax_hist_report.set_xlabel('Utilization %', fontsize=9)
+            ax_hist_report.set_ylabel('Number of Totes', fontsize=9)
+            ax_hist_report.tick_params(axis='both', which='major', labelsize=8)
+            ax_hist_report.grid(axis='y', linestyle='--', alpha=0.7)
+            fig_hist_report.tight_layout(pad=0.8)
+            
+            buf_hist = io.BytesIO()
+            fig_hist_report.savefig(buf_hist, format='png', dpi=90) 
+            buf_hist.seek(0)
+            img_base64_hist = base64.b64encode(buf_hist.getvalue()).decode('utf-8')
+            html_content += f"<div class='tote-image-container' style='max-width: 550px; margin-left: auto; margin-right: auto;'><img src='data:image/png;base64,{img_base64_hist}' alt='Tote Utilization Histogram'></div>"
+            plt.close(fig_hist_report)
+        except Exception as e:
+            html_content += f"<p><em>Error generating utilization histogram: {str(e)}</em></p>"
+            if 'fig_hist_report' in locals() and fig_hist_report: plt.close(fig_hist_report)
     else:
-        html_content += "<p>No items were packed in this simulation run.</p>"
-    html_content += "</div>"
+        html_content += "<p><em>No utilization data available for histogram.</em></p>"
+    html_content += "</div>" 
+
+
+    # --- Section: Unplaced Items (MODIFIED) ---
+    if unplaceable_items_log:
+        html_content += "<div class='section'>"
+        # Added 'open' attribute to make it expanded by default
+        html_content += "<details class='tote-details-collapsible' style='border-color: #ffc107;' open>" 
+        html_content += "<summary style='background-color: #fff3cd; color: #856404; font-weight: bold;'>"
+        html_content += f"Unplaced Items ({len(unplaceable_items_log)}) - Click to Expand/Collapse"
+        html_content += "</summary>"
+        html_content += "<div class='tote-content'>"
+        html_content += "<h4>Items that could not be packed:</h4>"
+        
+        unplaced_df = pd.DataFrame(unplaceable_items_log)
+        
+        # Check if 'dimensions' column exists and process it
+        if not unplaced_df.empty and 'dimensions' in unplaced_df.columns:
+            # Drop rows where 'dimensions' is NaN to prevent errors with .iloc[0] or .apply()
+            valid_dimensions_series = unplaced_df['dimensions'].dropna()
+            if not valid_dimensions_series.empty:
+                first_dim_element = valid_dimensions_series.iloc[0]
+                
+                if isinstance(first_dim_element, (tuple, list)) and len(first_dim_element) == 3:
+                    # Expand tuple/list into separate columns: 'Original Length', 'Original Width', 'Original Height'
+                    # Apply the transformation row by row to handle potential NaNs or malformed entries elsewhere
+                    def extract_dims(dim_data):
+                        if isinstance(dim_data, (tuple, list)) and len(dim_data) == 3:
+                            return dim_data
+                        return (None, None, None) # Return None tuple for malformed data
+                    
+                    dims_list = unplaced_df['dimensions'].apply(extract_dims).tolist()
+                    dims_as_df = pd.DataFrame(
+                        dims_list,
+                        index=unplaced_df.index,
+                        columns=['Original Length', 'Original Width', 'Original Height']
+                    )
+                    unplaced_df = pd.concat([unplaced_df.drop(columns=['dimensions']), dims_as_df], axis=1)
+
+                elif isinstance(first_dim_element, dict):
+                    # Handle dictionary case if 'dimensions' contains dicts
+                    # This assumes dicts might have keys like 'length', 'width', 'height' or similar
+                    dims_from_dict_df = unplaced_df['dimensions'].apply(pd.Series)
+                    
+                    # Rename columns from dict keys to 'Original Length', etc. if they exist
+                    rename_map_dict = {}
+                    if 'length' in dims_from_dict_df.columns: rename_map_dict['length'] = 'Original Length'
+                    if 'width' in dims_from_dict_df.columns: rename_map_dict['width'] = 'Original Width'
+                    if 'height' in dims_from_dict_df.columns: rename_map_dict['height'] = 'Original Height'
+                    # Add other potential key names from dict if necessary
+                    
+                    if rename_map_dict:
+                        dims_from_dict_df = dims_from_dict_df.rename(columns=rename_map_dict)
+                    
+                    unplaced_df = pd.concat([unplaced_df.drop(columns=['dimensions']), dims_from_dict_df], axis=1)
+        
+        # Select and rename columns for display in the HTML table
+        display_cols_unplaced = {}
+        if 'sku' in unplaced_df.columns: display_cols_unplaced['sku'] = 'SKU'
+        if 'reason' in unplaced_df.columns: display_cols_unplaced['reason'] = 'Reason'
+        
+        # Use the 'Original Length/Width/Height' columns if they were created from the 'dimensions' field
+        if 'Original Length' in unplaced_df.columns: display_cols_unplaced['Original Length'] = 'Length (mm)'
+        if 'Original Width' in unplaced_df.columns: display_cols_unplaced['Original Width'] = 'Width (mm)'
+        if 'Original Height' in unplaced_df.columns: display_cols_unplaced['Original Height'] = 'Height (mm)'
+        
+        if display_cols_unplaced and not unplaced_df.empty:
+            # Ensure all columns intended for display actually exist in the DataFrame
+            cols_to_select_for_display = [col for col in display_cols_unplaced.keys() if col in unplaced_df.columns]
+            
+            if cols_to_select_for_display:
+                unplaced_display_df = unplaced_df[cols_to_select_for_display].rename(columns=display_cols_unplaced)
+                
+                # Define a standard order for columns, ensuring Reason and Dimensions are logically placed
+                standard_order = ['SKU', 'Reason', 'Length (mm)', 'Width (mm)', 'Height (mm)']
+                ordered_cols_present = [col for col in standard_order if col in unplaced_display_df.columns]
+                
+                # Add any other columns that might exist but are not in standard_order, to the end
+                remaining_cols = [col for col in unplaced_display_df.columns if col not in ordered_cols_present]
+                final_ordered_cols = ordered_cols_present + remaining_cols
+                
+                unplaced_display_df = unplaced_display_df[final_ordered_cols]
+
+                # Convert numeric dimension columns to string with 1 decimal place, handling NaNs
+                for col_name in ['Length (mm)', 'Width (mm)', 'Height (mm)']:
+                    if col_name in unplaced_display_df.columns:
+                        unplaced_display_df[col_name] = pd.to_numeric(unplaced_display_df[col_name], errors='coerce').apply(lambda x: f"{x:.1f}" if pd.notnull(x) else "N/A")
+
+
+                html_content += unplaced_display_df.to_html(index=False, escape=False, classes="details-table", border=0)
+            else:
+                html_content += "<p>No displayable data found for unplaced items (columns missing or not mapped).</p>"
+        elif unplaced_df.empty:
+             html_content += "<p>No unplaced items to display.</p>" 
+        else: 
+            html_content += "<p>Unplaced item data is not in the expected format or no columns to display. Raw data:</p>"
+            html_content += "<pre>" + str(unplaceable_items_log) + "</pre>"
+
+        html_content += "</div>" # End .tote-content
+        html_content += "</details>"
+        html_content += "</div>" # End section
+    else:
+        html_content += "<div class='section'><p>All items were successfully placed, or no items were attempted for packing.</p></div>"
+    # --- End Unplaced Items Section ---
+
+
+    # Section: Individual Tote Details
+    html_content += "<div class='section'>" 
+    html_content += "<h2 class='section-title'>Individual Tote Details</h2>"
+
+    html_content += """
+    <div class="sort-controls" style="margin-bottom: 20px; padding: 10px; background-color: #f9f9f9; border-radius: 5px; border: 1px solid #eee; display: flex; align-items: center; flex-wrap: wrap;">
+        <label for="sort-key" style="margin-right: 5px; font-weight: 500;">Sort by:</label>
+        <select id="sort-key" style="margin-right: 15px; padding: 6px 8px; border-radius: 4px; border: 1px solid #ccc; font-size: 0.95em;">
+            <option value="id">Tote ID</option>
+            <option value="items">Number of Items</option>
+            <option value="utilization">Utilization</option>
+        </select>
+        <label for="sort-order" style="margin-right: 5px; font-weight: 500;">Order:</label>
+        <select id="sort-order" style="margin-right: 15px; padding: 6px 8px; border-radius: 4px; border: 1px solid #ccc; font-size: 0.95em;">
+            <option value="asc">Ascending</option>
+            <option value="desc">Descending</option>
+        </select>
+        <button onclick="sortToteDetailsHTMLReport()" style="padding: 6px 12px; border-radius: 4px; border: none; background-color: #007bff; color: white; cursor: pointer; font-size: 0.95em; font-weight: 500;">Sort</button>
+    </div>
+    <div id="tote-details-container">
+""" 
+
+    if all_totes_data: 
+        for tote_summary_info in all_totes_data: 
+            tote_id = tote_summary_info.get('id', 'Unknown Tote')
+            items_in_tote_list = tote_summary_info.get('items', []) 
+            utilization = tote_summary_info.get('utilization_percent', 0.0)
+            items_packed_count = len(items_in_tote_list)
+
+            tote_id_attr = str(tote_id) 
+            items_packed_count_attr = str(items_packed_count)
+            utilization_attr = f"{utilization:.2f}"
+
+            html_content += f"<div class='tote-wrapper' style='margin-bottom: 12px;'>" 
+            html_content += f"<details class='tote-details-collapsible' data-tote-id='{tote_id_attr}' data-items='{items_packed_count_attr}' data-utilization='{utilization_attr}'>"
+            html_content += f"<summary><strong>Tote ID: {tote_id}</strong> | Items: {items_packed_count} | Utilization: {utilization:.2f}%</summary>"
+            html_content += "<div class='tote-content'>" 
+
+            fig = visualization.generate_tote_figure(tote_summary_info)
+            if fig:
+                try:
+                    buf = io.BytesIO()
+                    fig.savefig(buf, format='png', bbox_inches='tight', dpi=75)
+                    buf.seek(0)
+                    img_base64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+                    html_content += f"<div class='tote-image-container'><img src='data:image/png;base64,{img_base64}' alt='Tote {tote_id} visualization'></div>"
+                    plt.close(fig) 
+                except Exception as e:
+                    html_content += f"<p><em>Error generating image for Tote {tote_id}: {str(e)}</em></p>"
+                    if fig: plt.close(fig) 
+            else:
+                html_content += f"<p><em>Could not generate visualization for Tote {tote_id}.</em></p>"
+            
+            tote_items_df = report_df[report_df['Tote ID'] == tote_id]
+            if not tote_items_df.empty:
+                html_content += "<h4>Packed Items:</h4>"
+                html_content += tote_items_df.to_html(index=False, escape=False, classes="details-table", border=0)
+            else:
+                html_content += "<p>No item details found for this tote in the main report.</p>"
+            
+            html_content += "</div>" 
+            html_content += "</details>" 
+            html_content += "</div>" 
+
+    else: 
+        html_content += "<p>No tote data available for detailed view.</p>"
+    
+    html_content += "</div>" 
+    html_content += "</div>" 
+
+    html_content += """
+    <script>
+    function sortToteDetailsHTMLReport() {
+        const container = document.getElementById('tote-details-container');
+        if (!container) {
+            console.error("Tote details container not found.");
+            return;
+        }
+
+        const sortKey = document.getElementById('sort-key').value;
+        const sortOrder = document.getElementById('sort-order').value;
+
+        const toteWrappers = Array.from(container.getElementsByClassName('tote-wrapper'));
+
+        toteWrappers.sort((a, b) => {
+            const detailsA = a.querySelector('details');
+            const detailsB = b.querySelector('details');
+            if (!detailsA || !detailsB) return 0; 
+
+            let valA, valB;
+
+            if (sortKey === 'id') {
+                let rawA = detailsA.dataset.toteId;
+                let rawB = detailsB.dataset.toteId;
+                
+                let numA_match = rawA.match(/\\d+/);
+                let numB_match = rawB.match(/\\d+/);
+                let numA = numA_match ? parseInt(numA_match[0], 10) : NaN;
+                let numB = numB_match ? parseInt(numB_match[0], 10) : NaN;
+
+                if (!isNaN(numA) && !isNaN(numB) && (rawA.replace(numA_match[0], "") === rawB.replace(numB_match[0], ""))) {
+                    valA = numA;
+                    valB = numB;
+                } else { 
+                    valA = rawA.toLowerCase();
+                    valB = rawB.toLowerCase();
+                }
+            } else if (sortKey === 'items') {
+                valA = parseInt(detailsA.dataset.items, 10);
+                valB = parseInt(detailsB.dataset.items, 10);
+            } else if (sortKey === 'utilization') {
+                valA = parseFloat(detailsA.dataset.utilization);
+                valB = parseFloat(detailsB.dataset.utilization);
+            } else { 
+                return 0;
+            }
+
+            if (valA < valB) return sortOrder === 'asc' ? -1 : 1;
+            if (valA > valB) return sortOrder === 'asc' ? 1 : -1;
+            return 0;
+        });
+
+        toteWrappers.forEach(wrapper => container.appendChild(wrapper));
+    }
+    window.sortToteDetailsHTMLReport = sortToteDetailsHTMLReport;
+    </script>
+    """
 
     html_content += f"<div class='footer'>End of Report</div>"
     html_content += "</div></body></html>"
@@ -187,13 +589,13 @@ st.sidebar.header("Simulation Configuration")
 # --- Tote Configuration ---
 st.sidebar.subheader("Tote Dimensions (mm)")
 tote_length_input = st.sidebar.number_input(
-    "Tote Length", min_value=50, value=int(config.TOTE_MAX_LENGTH), step=10, key="tote_length" # Cast to int for number_input
+    "Tote Length", min_value=50, value=int(config.TOTE_MAX_LENGTH), step=10, key="tote_length" 
 )
 tote_width_input = st.sidebar.number_input(
-    "Tote Width", min_value=50, value=int(config.TOTE_MAX_WIDTH), step=10, key="tote_width" # Cast to int
+    "Tote Width", min_value=50, value=int(config.TOTE_MAX_WIDTH), step=10, key="tote_width" 
 )
 tote_height_input = st.sidebar.number_input(
-    "Tote Height", min_value=50, value=int(config.TOTE_MAX_HEIGHT), step=10, key="tote_height" # Cast to int
+    "Tote Height", min_value=50, value=int(config.TOTE_MAX_HEIGHT), step=10, key="tote_height" 
 )
 height_map_resolution_input = st.sidebar.number_input(
     "Height Map Resolution (mm)", min_value=1, value=config.HEIGHT_MAP_RESOLUTION, step=1, key="height_map_resolution"
@@ -201,14 +603,10 @@ height_map_resolution_input = st.sidebar.number_input(
 
 # --- Case Generation ---
 st.sidebar.subheader("Case Data Source")
-# When data source changes, reset simulation_ran to ensure results are cleared if user modifies source then reruns
 def reset_sim_ran_on_source_change():
-    """Resets simulation state when the data source (random/CSV) is changed."""
     st.session_state.simulation_ran = False
-    # Also clear previous results to avoid showing stale data if user switches source then reruns old config
     st.session_state.simulation_results = {'visualization_output_list': [], 'full_totes_summary_data': []}
     st.session_state.original_item_count = 0
-
 
 case_data_source = st.sidebar.radio(
     "Select case data source:",
@@ -218,7 +616,6 @@ case_data_source = st.sidebar.radio(
 )
 
 if case_data_source == "Generate Random Cases":
-    # If switching from CSV to Random, clear CSV-related session state
     if st.session_state.uploaded_file_name is not None:
         st.session_state.csv_headers = []
         st.session_state.column_mappings = {k: None for k in st.session_state.column_mappings}
@@ -231,7 +628,7 @@ if case_data_source == "Generate Random Cases":
     random_seed_input = st.sidebar.number_input(
         "Random Seed", value=42, step=1, key="random_seed"
     )
-else: # "Upload CSV File"
+else: 
     st.sidebar.subheader("Upload Case Data")
     uploaded_file = st.sidebar.file_uploader(
         "Upload Case Data CSV", type=["csv"], key="case_csv_uploader"
@@ -241,31 +638,41 @@ else: # "Upload CSV File"
         if st.session_state.uploaded_file_name != uploaded_file.name:
             st.session_state.uploaded_file_name = uploaded_file.name
             try:
-                # Read only the header row first to get column names for mapping
                 df_headers = pd.read_csv(uploaded_file, nrows=0)
                 st.session_state.csv_headers = df_headers.columns.tolist()
                 st.session_state.column_mappings = {k: None for k in st.session_state.column_mappings}
-                uploaded_file.seek(0) # Reset file pointer for next read
+                uploaded_file.seek(0) 
                 st.sidebar.success(f"File '{uploaded_file.name}' loaded. Map columns below.")
             except Exception as e:
                 st.sidebar.error(f"Error reading CSV headers: {e}")
                 st.session_state.csv_headers = []
                 st.session_state.uploaded_file_name = None
     else:
-        if st.session_state.uploaded_file_name is not None: # If a file was previously loaded but now removed
+        if st.session_state.uploaded_file_name is not None: 
             st.session_state.csv_headers = []
             st.session_state.column_mappings = {k: None for k in st.session_state.column_mappings}
             st.session_state.uploaded_file_name = None
 
-    if uploaded_file is not None: # Only show if a file is uploaded
-        st.sidebar.number_input(
+    if uploaded_file is not None: 
+        max_rows_input_val = st.sidebar.number_input(
             "Max rows to load from CSV (0 for all)",
             min_value=0,
-            value=st.session_state.get('max_rows_csv', 0), 
+            value=st.session_state.get('max_rows_csv', 0),
             step=100,
-            key="max_rows_csv", # Links to st.session_state.max_rows_csv
+            key="max_rows_csv", 
             help="Enter 0 or leave blank to load all rows. Headers are always read."
         )
+        if max_rows_input_val > 0:
+            st.session_state.csv_sampling_method = st.sidebar.radio(
+                "Sampling method for subset:",
+                ("Sequential", "Random"),
+                index=0, 
+                key="csv_sampling_method_radio",
+                help="Choose 'Sequential' to load the first X rows, or 'Random' to load X rows randomly from the entire file."
+            )
+        else:
+            if 'csv_sampling_method' in st.session_state:
+                del st.session_state.csv_sampling_method 
 
     if st.session_state.csv_headers:
         st.sidebar.subheader("Map CSV Columns")
@@ -295,24 +702,22 @@ else: # "Upload CSV File"
             "SKU Column (Optional):", options=sku_options,
             index=get_col_index('sku_col', sku_options, 0), key="map_sku"
         )
-    elif uploaded_file and not st.session_state.csv_headers: # If file uploaded but headers couldn't be read
+    elif uploaded_file and not st.session_state.csv_headers: 
         st.sidebar.warning("Could not read columns. Check CSV format or re-upload.")
 
 
 # --- Run/Pause Simulation Buttons ---
 run_col, pause_col = st.sidebar.columns(2)
 
-# Run Button
 if run_col.button("Run Simulation", key="run_button", type="primary", disabled=st.session_state.get('simulation_running', False)):
-    # Reset all relevant states
     st.session_state.simulation_ran = False
-    st.session_state.simulation_running = True # Start the process
+    st.session_state.simulation_running = True 
     st.session_state.simulation_paused = False
     st.session_state.simulation_progress = 0.0
     st.session_state.simulation_generator = None
-    st.session_state.simulation_results = {'visualization_output_list': [], 'full_totes_summary_data': []}
+    st.session_state.simulation_results = {'visualization_output_list': [], 'full_totes_summary_data': [], 'unplaceable_items_log': []} # Ensure log is reset
     st.session_state.intermediate_results = None
-    st.session_state.original_item_count = 0 # Reset item count
+    st.session_state.original_item_count = 0 
     st.session_state.status_message = "Initializing simulation..."
 
     dynamic_tote_config = {
@@ -325,13 +730,11 @@ if run_col.button("Run Simulation", key="run_button", type="primary", disabled=s
         "GRID_DIM_Y": max(1, math.ceil(int(tote_width_input) / int(height_map_resolution_input)))
     }
 
-    # --- Prepare simulation ---
     simulation_can_proceed = False
     current_input_cases = []
-    st.session_state.current_tote_config_for_report = dynamic_tote_config # Save for report
+    st.session_state.current_tote_config_for_report = dynamic_tote_config 
 
     if case_data_source == "Generate Random Cases":
-        # Generate cases directly
         current_input_cases = simulation.generate_test_cases(
             num_cases=int(num_random_cases_input),
             seed=int(random_seed_input),
@@ -343,7 +746,7 @@ if run_col.button("Run Simulation", key="run_button", type="primary", disabled=s
             st.session_state.status_message = f"Generated {len(current_input_cases)} random cases. Starting simulation..."
         else:
             st.warning("No random cases were generated.")
-            st.session_state.simulation_running = False # Stop if no cases
+            st.session_state.simulation_running = False 
 
     elif case_data_source == "Upload CSV File":
         if uploaded_file is not None:
@@ -354,26 +757,42 @@ if run_col.button("Run Simulation", key="run_button", type="primary", disabled=s
 
             if not all([len_col, wid_col, hei_col]):
                 st.error("Column mapping incomplete. Please select columns for Length, Width, and Height.")
-                st.session_state.simulation_running = False # Stop
+                st.session_state.simulation_running = False 
             else:
                 try:
                     uploaded_file.seek(0)
                     columns_to_read = list(set(filter(None, [len_col, wid_col, hei_col, sku_col_map if sku_col_map != "Auto-generate SKU" else None])))
                     if not all(c in st.session_state.csv_headers for c in [len_col, wid_col, hei_col]):
                          st.error("Essential mapped columns not found in CSV headers.")
-                         st.session_state.simulation_running = False # Stop
+                         st.session_state.simulation_running = False 
                     else:
                         max_rows_val = st.session_state.get('max_rows_csv', 0)
-                        nrows_param = int(max_rows_val) if max_rows_val > 0 else None
-                        df = pd.read_csv(uploaded_file, usecols=columns_to_read, nrows=nrows_param)
+                        nrows_to_load = int(max_rows_val) if max_rows_val > 0 else None
+                        
+                        sampling_method = st.session_state.get('csv_sampling_method', 'Sequential') if nrows_to_load else 'Sequential'
 
-                        # Basic validation (can be expanded)
+                        if nrows_to_load and sampling_method == "Random":
+                            full_df_for_sampling = pd.read_csv(uploaded_file) 
+                            if nrows_to_load >= len(full_df_for_sampling):
+                                df = full_df_for_sampling[columns_to_read] 
+                                st.sidebar.info(f"Requested {nrows_to_load} random rows, but file only has {len(full_df_for_sampling)}. Loading all rows.")
+                            else:
+                                df = full_df_for_sampling.sample(n=nrows_to_load, random_state=st.session_state.get('random_seed', 42)).reset_index(drop=True)
+                                df = df[columns_to_read] 
+                            st.sidebar.info(f"Loaded {len(df)} rows randomly from CSV.")
+                        else: 
+                            df = pd.read_csv(uploaded_file, usecols=columns_to_read, nrows=nrows_to_load)
+                            if nrows_to_load:
+                                st.sidebar.info(f"Loaded first {len(df)} rows sequentially from CSV.")
+                            else:
+                                st.sidebar.info(f"Loaded all {len(df)} rows from CSV.")
+
                         if not all(pd.api.types.is_numeric_dtype(df[col]) for col in [len_col, wid_col, hei_col]):
                             st.error("Length, Width, Height columns must be numeric.")
-                            st.session_state.simulation_running = False # Stop
+                            st.session_state.simulation_running = False 
                         elif not all((df[col] > 0).all() for col in [len_col, wid_col, hei_col]):
                              st.error("Length, Width, Height values must be positive.")
-                             st.session_state.simulation_running = False # Stop
+                             st.session_state.simulation_running = False 
                         else:
                             for index, row in df.iterrows():
                                 sku_val = f"CSV_SKU_{index+1}"
@@ -388,23 +807,21 @@ if run_col.button("Run Simulation", key="run_button", type="primary", disabled=s
                             st.session_state.status_message = f"Loaded {len(current_input_cases)} cases from CSV. Starting simulation..."
                 except Exception as e:
                     st.error(f"Error processing CSV: {e}")
-                    st.session_state.simulation_running = False # Stop
+                    st.session_state.simulation_running = False 
         else:
             st.error("Please upload a CSV file.")
-            st.session_state.simulation_running = False # Stop
+            st.session_state.simulation_running = False 
 
-    # --- Initialize Generator if ready ---
     if simulation_can_proceed and current_input_cases:
         st.session_state.simulation_generator = simulation.run_simulation_for_visualization_data(
             case_data_list=current_input_cases,
             current_tote_config=dynamic_tote_config
         )
-        st.rerun() # Start consuming the generator in the main script body
+        st.rerun() 
     elif not simulation_can_proceed:
-        st.session_state.simulation_running = False # Ensure it's stopped if setup failed
+        st.session_state.simulation_running = False 
         st.rerun()
 
-# Pause/Resume Button
 pause_label = "Pause" if not st.session_state.get('simulation_paused') else "Resume"
 if pause_col.button(pause_label, key="pause_button", disabled=not st.session_state.get('simulation_running', False)):
     st.session_state.simulation_paused = not st.session_state.simulation_paused
@@ -414,45 +831,43 @@ if pause_col.button(pause_label, key="pause_button", disabled=not st.session_sta
 
 # --- Simulation Progress Display Area ---
 st.header("Simulation Process & Results")
-progress_area = st.empty() # Placeholder for progress bar and status
+progress_area = st.empty() 
 
 # --- Consume Generator (if running and not paused) ---
 if st.session_state.get('simulation_running') and not st.session_state.get('simulation_paused'):
     if st.session_state.simulation_generator:
         try:
-            # Get the next update from the simulation generator
             yielded_data = next(st.session_state.simulation_generator, None)
 
             if yielded_data:
                 st.session_state.simulation_progress = yielded_data.get("progress", 0.0)
                 st.session_state.status_message = yielded_data.get("status_message", "Processing...")
-                st.session_state.intermediate_results = yielded_data # Store the whole dict
+                st.session_state.intermediate_results = yielded_data 
 
-                # Check if this is the final yield
                 if yielded_data.get("is_final", False):
                     st.session_state.simulation_running = False
                     st.session_state.simulation_paused = False
-                    st.session_state.simulation_ran = True # Mark as completed
-                    # Store final results properly
+                    st.session_state.simulation_ran = True 
                     st.session_state.simulation_results['visualization_output_list'] = yielded_data.get('intermediate_vis_data', [])
                     st.session_state.simulation_results['full_totes_summary_data'] = yielded_data.get('intermediate_totes_data', [])
-                    st.session_state.simulation_generator = None # Clear generator
-                    st.success("Simulation finished!") # Show success message
+                    st.session_state.simulation_results['unplaceable_items_log'] = yielded_data.get('unplaceable_log', []) 
+                    st.session_state.simulation_generator = None 
+                    st.success("Simulation finished!") 
                     st.session_state.status_message = yielded_data.get("status_message", "Simulation Complete.")
-                st.rerun() # Rerun to process next step or update UI after final step
+                st.rerun() 
             else:
-                # Generator exhausted unexpectedly or finished without final flag (handle gracefully)
                 st.session_state.simulation_running = False
                 st.session_state.simulation_paused = False
-                st.session_state.simulation_ran = True # Assume finished if generator ends
+                st.session_state.simulation_ran = True 
                 st.session_state.simulation_generator = None
-                # Use the last known intermediate results as final if necessary
                 if st.session_state.intermediate_results:
                      st.session_state.simulation_results['visualization_output_list'] = st.session_state.intermediate_results.get('intermediate_vis_data', [])
                      st.session_state.simulation_results['full_totes_summary_data'] = st.session_state.intermediate_results.get('intermediate_totes_data', [])
+                     st.session_state.simulation_results['unplaceable_items_log'] = st.session_state.intermediate_results.get('unplaceable_log', []) 
                      st.session_state.status_message = st.session_state.intermediate_results.get("status_message", "Simulation Ended.")
                 else:
                      st.session_state.status_message = "Simulation ended unexpectedly."
+                     st.session_state.simulation_results['unplaceable_items_log'] = [] 
                 st.rerun()
 
         except Exception as e:
@@ -475,28 +890,24 @@ with progress_area.container():
 # --- Display Results (Show intermediate if paused, final if ran) ---
 results_to_display = None
 if st.session_state.get('simulation_paused') and st.session_state.get('intermediate_results'):
-    # Show intermediate results when paused
     results_to_display = st.session_state.intermediate_results
     st.warning("Simulation Paused. Showing intermediate results.")
 elif st.session_state.get('simulation_ran'):
-    # Show final results after completion
     results_to_display = {
         'intermediate_totes_data': st.session_state.simulation_results['full_totes_summary_data'],
-        'intermediate_vis_data': st.session_state.simulation_results['visualization_output_list']
-        # We might need to reconstruct the unplaceable log if needed from final results, or store it separately
+        'intermediate_vis_data': st.session_state.simulation_results['visualization_output_list'],
+        'unplaceable_log': st.session_state.simulation_results.get('unplaceable_items_log', []) 
     }
 
 if results_to_display:
     full_totes_summary_data = results_to_display.get('intermediate_totes_data', [])
     visualization_output_list = results_to_display.get('intermediate_vis_data', [])
-    # unplaceable_log = results_to_display.get('unplaceable_log', []) # If needed
+    unplaceable_log_results = results_to_display.get('unplaceable_log', [])
 
 
-    # --- Overall Statistics Section ---
     if full_totes_summary_data:
         st.subheader("Overall Simulation Statistics")
 
-        # Pre-calculate all necessary values
         utilization_percentages = [
             tote.get('utilization_percent', 0.0)
             for tote in full_totes_summary_data
@@ -504,10 +915,11 @@ if results_to_display:
         ]
         total_totes_used = len(full_totes_summary_data)
         total_items_placed_in_stats = sum(len(tote.get('items',[])) for tote in full_totes_summary_data)
-        unplaced_items_count = 0
-        if 'original_item_count' in st.session_state and st.session_state.original_item_count >= total_items_placed_in_stats:
-            unplaced_items_count = st.session_state.original_item_count - total_items_placed_in_stats
         
+        # Calculate unplaced_items_count based on the log from results_to_display
+        unplaced_items_count = len(unplaceable_log_results)
+
+
         avg_items_per_tote = (total_items_placed_in_stats / total_totes_used) if total_totes_used > 0 else 0.0
         totes_with_one_item = sum(1 for tote in full_totes_summary_data if len(tote.get('items', [])) == 1)
         percentage_single_case_totes = (totes_with_one_item / total_totes_used * 100) if total_totes_used > 0 else 0.0
@@ -531,13 +943,12 @@ if results_to_display:
             most_common_sku, most_common_count = sku_counts.most_common(1)[0]
             most_frequent_sku_str = f"{most_common_sku} (Count: {most_common_count})"
 
-        # --- Group 1: Packing Efficiency & Tote Performance ---
         st.markdown("###### Packing Efficiency & Tote Performance")
         
         perf_data = [
             {"Metric": "Total Totes Used", "Value": str(total_totes_used)},
             {"Metric": "Total Cases Placed", "Value": str(total_items_placed_in_stats)},
-            {"Metric": "Cases That Did Not Fit", "Value": str(unplaced_items_count)},
+            {"Metric": "Cases That Did Not Fit", "Value": str(unplaced_items_count)}, # Updated to use log length
             {"Metric": "Average Items per Tote", "Value": f"{avg_items_per_tote:.2f}"},
             {"Metric": "Single-Case Totes (Count)", "Value": str(totes_with_one_item)},
             {"Metric": "Single-Case Totes (%)", "Value": f"{percentage_single_case_totes:.2f}%"},
@@ -551,11 +962,11 @@ if results_to_display:
             ])
         
         perf_df = pd.DataFrame(perf_data)
-        st.table(perf_df.set_index('Metric')) # Using st.table for a cleaner look
+        st.table(perf_df.set_index('Metric')) 
 
         if utilization_percentages:
-            st.markdown("###### Distribution of Tote Utilizations") # Sub-heading for histogram
-            fig_hist, ax_hist = plt.subplots(figsize=(4.0, 2.25)) # Slightly larger for table context
+            st.markdown("###### Distribution of Tote Utilizations") 
+            fig_hist, ax_hist = plt.subplots(figsize=(4.0, 2.25)) 
             ax_hist.hist(utilization_percentages, bins='auto', color='skyblue', edgecolor='black')
             ax_hist.set_title('Tote Utilization %', fontsize=9)
             ax_hist.set_xlabel('Utilization %', fontsize=8)
@@ -567,7 +978,6 @@ if results_to_display:
         else:
             st.write("No utilization percentage data available for detailed utilization statistics or histogram.")
 
-        # --- Group 2: SKU Distribution & Insights ---
         st.markdown("---") 
         st.markdown("###### SKU Distribution & Insights")
         
@@ -579,13 +989,12 @@ if results_to_display:
         sku_df = pd.DataFrame(sku_data)
         st.table(sku_df.set_index('Metric'))
 
-        # --- Export Report ---
         st.markdown("---")
         st.markdown("###### Export Full Pack Report")
-        if visualization_output_list:
-            report_data = []
-            for item_vis_data in visualization_output_list: # This is the detailed per-item-placement list
-                report_data.append({
+        if visualization_output_list: # This is the detailed item placement list
+            report_data_items = [] # Renamed to avoid confusion with report_df for HTML
+            for item_vis_data in visualization_output_list: 
+                report_data_items.append({
                     "Tote ID": item_vis_data.get('tote_id', 'N/A'),
                     "SKU": item_vis_data.get('case_sku', 'N/A'),
                     "Placed Length (mm)": item_vis_data.get('placed_case_dims_mm', {}).get('length', 'N/A'),
@@ -595,21 +1004,26 @@ if results_to_display:
                     "Position Y (mm)": item_vis_data.get('position_mm', {}).get('y', 'N/A'),
                     "Position Z (mm)": item_vis_data.get('position_mm', {}).get('z', 'N/A'),
                 })
-            report_df = pd.DataFrame(report_data)
+            report_df_for_export = pd.DataFrame(report_data_items) # This is the df for CSV and HTML items
 
-            # Prepare data for styled HTML report
             current_tote_config = st.session_state.get('current_tote_config_for_report', {})
             report_summary_stats = {
                 "total_totes_used": total_totes_used,
                 "total_items_placed": total_items_placed_in_stats,
-                "unplaced_items_count": unplaced_items_count,
+                "unplaced_items_count": unplaced_items_count, # Use the accurate count
                 "average_utilization": statistics.mean(utilization_percentages) if utilization_percentages else None,
                 "min_utilization": min(utilization_percentages) if utilization_percentages else None,
                 "median_utilization": statistics.median(utilization_percentages) if utilization_percentages else None,
                 "max_utilization": max(utilization_percentages) if utilization_percentages else None,
+                "avg_items_per_tote": avg_items_per_tote,
+                "totes_with_one_item": totes_with_one_item,
+                "percentage_single_case_totes": percentage_single_case_totes,
+                "num_unique_skus_placed": num_unique_skus_placed,
+                "avg_totes_per_sku": avg_totes_per_sku,
+                "most_frequent_sku": most_frequent_sku_str,
             }
             
-            csv_export = report_df.to_csv(index=False).encode('utf-8')
+            csv_export = report_df_for_export.to_csv(index=False).encode('utf-8')
             st.download_button(
                 label="Download Full Pack Report (CSV)",
                 data=csv_export,
@@ -618,8 +1032,13 @@ if results_to_display:
                 key="download_report_csv"
             )
 
-            # Generate styled HTML
-            html_content_styled = generate_styled_html_report(report_df, report_summary_stats, current_tote_config)
+            html_content_styled = generate_styled_html_report(
+                report_df_for_export, # Pass the detailed item placement data
+                report_summary_stats,
+                current_tote_config,
+                full_totes_summary_data, # This is the per-tote summary
+                unplaceable_log_results 
+            )
             html_export_styled = html_content_styled.encode('utf-8')
             st.download_button(
                 label="Download Full Pack Report (HTML)",
@@ -631,9 +1050,8 @@ if results_to_display:
         else:
             st.caption("No packing data available to generate a report.")
 
-        st.divider() # Divider after the statistics section
+        st.divider() 
 
-    # --- Tote Utilization Summary & Visualization (Individual Totes) ---
     st.subheader("Individual Tote Details")
     if not full_totes_summary_data:
         st.write("No totes were used or processed in the simulation (e.g., no items to pack or items too large for the configured tote).")
@@ -645,7 +1063,6 @@ if results_to_display:
             if total_items_placed_for_caption > 0:
                 st.caption(f"Displaying packing results for {total_items_placed_for_caption} items placed in totes.")
 
-        # Sorting options for individual totes
         sort_container = st.container()
         with sort_container:
             scol1, scol2 = st.columns([0.6, 0.4])
@@ -694,42 +1111,29 @@ if results_to_display:
 
             with st.expander(f"Tote ID: {tote_id_str} | Items: {items_packed_count} | Utilization: {utilization:.2f}%", expanded=False):
 
-                col1, col2 = st.columns([2, 1]) # Keep existing layout for details and plot
+                col1, col2 = st.columns([2, 1]) 
 
                 with col1:
                     st.markdown("###### 3D View")
                     if items_packed_count > 0:
-                        # Use a unique key for the button based on tote_id_str
-                        button_key = f"load_plot_button_{tote_id_str}_{i}" # Add index i for more uniqueness if tote_id_str could repeat (e.g. "Tote_1" from two runs)
-                        
-                        # Check if plot was loaded in this session for this tote
+                        button_key = f"load_plot_button_{tote_id_str}_{i}" 
                         plot_loaded_session_key = f"plot_loaded_{tote_id_str}_{i}"
 
                         if st.button("Load/Refresh 3D View", key=button_key):
                             with st.spinner(f"Generating visualization for Tote {tote_id_str}..."):
                                 fig = visualization.generate_tote_figure(tote_summary_info)
                                 if fig:
-                                    # Store figure in session state to persist it if button is not pressed again
-                                    # but this can consume memory. For now, direct display.
                                     st.session_state[plot_loaded_session_key] = fig 
-                                    # No, pyplot will display it. If we want to cache, need to handle display from cache.
-                                    # Simpler: just display it. It will disappear if expander re-renders without button press.
                                     st.pyplot(fig, clear_figure=True)
-                                    plt.close(fig) # Close the figure to free memory after displaying
-                                    # To make it "stick" better, one might store the fig in session_state
-                                    # and then check session_state to display it, but that's more complex.
-                                    # This implementation: click to load. It shows. If page reloads/expander closes & opens, click again.
+                                    plt.close(fig) 
                                 else:
                                     st.warning("Could not generate visualization figure for this tote.")
                                     if plot_loaded_session_key in st.session_state:
-                                        del st.session_state[plot_loaded_session_key] # Clear if failed
-                        # else:
-                            # This part would be for displaying a cached plot if we implemented caching.
-                            # For now, plot only shows on button click.
-                            # if plot_loaded_session_key in st.session_state and st.session_state[plot_loaded_session_key]:
-                            #    st.pyplot(st.session_state[plot_loaded_session_key], clear_figure=True)
-
-
+                                        del st.session_state[plot_loaded_session_key] 
+                        elif plot_loaded_session_key in st.session_state and st.session_state[plot_loaded_session_key]:
+                             # If already loaded and button not pressed again, show cached plot
+                             st.pyplot(st.session_state[plot_loaded_session_key], clear_figure=True)
+                             # No need to close here as it's already closed after initial generation or should be managed carefully
                     else:
                         st.caption("No items in this tote to visualize.")
 
@@ -752,13 +1156,13 @@ if results_to_display:
                             item_details_df['Width'] = pd.to_numeric(item_details_df['Width'], errors='coerce').round(1)
                             item_details_df['Height'] = pd.to_numeric(item_details_df['Height'], errors='coerce').round(1)
                         except Exception:
-                            pass
+                            pass # Keep as N/A or original string if conversion fails
 
                         st.dataframe(
                             item_details_df,
-                            height=min(350, (len(item_details_list) + 1) * 35 + 3),
+                            height=min(350, (len(item_details_list) + 1) * 35 + 3), # Dynamic height
                             use_container_width=True
                         )
                     else:
                         st.caption("No items in this tote.")
-# The initial info message is now handled by the progress_area logic when not running/ran.
+

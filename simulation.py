@@ -168,7 +168,11 @@ def run_simulation_for_visualization_data(case_data_list, current_tote_config): 
             reason = "volume" if is_fundamentally_too_large_vol else "dimensions"
             status_message = f"Case SKU {current_case['sku']} is fundamentally too large ({reason}). Skipping."
             print(f"  LOG: {status_message}")
-            unplaceable_cases_log.append({"sku": current_case['sku'], "reason": f"Fundamentally too large ({reason})"})
+            unplaceable_cases_log.append({
+                "sku": current_case['sku'], 
+                "reason": f"Fundamentally too large ({reason})",
+                "dimensions": current_case["original_dims"] # Add original dimensions
+            })
             # Yield progress even when skipping
             yield {
                 "progress": progress,
@@ -210,7 +214,11 @@ def run_simulation_for_visualization_data(case_data_list, current_tote_config): 
                 reason_new_tote = "no spatial fit" if not placement_details_new_tote["can_fit"] else "insufficient volume (unexpected)"
                 status_message = f"Case SKU {current_case['sku']} could not be placed even in new Tote {current_tote['id']} ({reason_new_tote}). Skipping."
                 print(f"  ERROR: {status_message}")
-                unplaceable_cases_log.append({"sku": current_case['sku'], "reason": f"Could not fit new empty tote ({reason_new_tote})"})
+                unplaceable_cases_log.append({
+                    "sku": current_case['sku'], 
+                    "reason": f"Could not fit new empty tote ({reason_new_tote})",
+                    "dimensions": current_case["original_dims"] # Add original dimensions
+                })
 
         # --- Prepare data for visualization list (do this incrementally) ---
         # Find the tote the item was *actually* placed in (could be current_tote or the last one in all_processed_totes_full_data if a new one was just started)
