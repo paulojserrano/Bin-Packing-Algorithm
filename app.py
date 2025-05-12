@@ -66,7 +66,7 @@ if 'csv_headers' not in st.session_state:
     st.session_state.csv_headers = []
 if 'column_mappings' not in st.session_state:
     st.session_state.column_mappings = {
-        'length_col': None, 'width_col': None, 'height_col': None, 'sku_col': None
+        'length_col': None, 'width_col': None, 'height_col': None, 'sku_col': None, 'weight_col': None
     }
 if 'uploaded_file_name' not in st.session_state:
     st.session_state.uploaded_file_name = None
@@ -123,6 +123,8 @@ def generate_styled_html_report(report_df, summary_stats_dict, tote_config, all_
     sim_config_html += f"<p><strong>Tote Width:</strong> {tote_config.get('TOTE_MAX_WIDTH', 'N/A')} mm</p>"
     sim_config_html += f"<p><strong>Tote Height:</strong> {tote_config.get('TOTE_MAX_HEIGHT', 'N/A')} mm</p>"
     sim_config_html += f"<p><strong>Height Map Resolution:</strong> {tote_config.get('HEIGHT_MAP_RESOLUTION', 'N/A')} mm</p>"
+    sim_config_html += f"<p><strong>Max Weight per Tote:</strong> {tote_config.get('MAX_WEIGHT_PER_TOTE', 'N/A')} units</p>"
+    sim_config_html += f"<p><strong>Max Unique SKUs per Tote:</strong> {tote_config.get('MAX_UNIQUE_SKUS_PER_TOTE', 'N/A')}</p>"
     sim_config_html += "</div>"
 
     # --- Overall Packing Statistics Section ---
@@ -216,18 +218,19 @@ def generate_styled_html_report(report_df, summary_stats_dict, tote_config, all_
         if 'Original Length' in unplaced_df.columns: display_cols_unplaced['Original Length'] = 'Length (mm)'
         if 'Original Width' in unplaced_df.columns: display_cols_unplaced['Original Width'] = 'Width (mm)'
         if 'Original Height' in unplaced_df.columns: display_cols_unplaced['Original Height'] = 'Height (mm)'
+        if 'weight' in unplaced_df.columns: display_cols_unplaced['weight'] = 'Weight (units)' # Add weight column
         if display_cols_unplaced and not unplaced_df.empty:
             cols_to_select_for_display = [col for col in display_cols_unplaced.keys() if col in unplaced_df.columns]
             if cols_to_select_for_display:
                 unplaced_display_df = unplaced_df[cols_to_select_for_display].rename(columns=display_cols_unplaced)
-                standard_order = ['SKU', 'Reason', 'Length (mm)', 'Width (mm)', 'Height (mm)']
+                standard_order = ['SKU', 'Reason', 'Length (mm)', 'Width (mm)', 'Height (mm)', 'Weight (units)']
                 ordered_cols_present = [col for col in standard_order if col in unplaced_display_df.columns]
                 remaining_cols = [col for col in unplaced_display_df.columns if col not in ordered_cols_present]
                 final_ordered_cols = ordered_cols_present + remaining_cols
                 unplaced_display_df = unplaced_display_df[final_ordered_cols]
-                for col_name in ['Length (mm)', 'Width (mm)', 'Height (mm)']:
+                for col_name in ['Length (mm)', 'Width (mm)', 'Height (mm)', 'Weight (units)']:
                     if col_name in unplaced_display_df.columns:
-                        unplaced_display_df[col_name] = pd.to_numeric(unplaced_display_df[col_name], errors='coerce').apply(lambda x: f"{x:.1f}" if pd.notnull(x) else "N/A")
+                        unplaced_display_df[col_name] = pd.to_numeric(unplaced_display_df[col_name], errors='coerce').apply(lambda x: f"{x:.2f}" if pd.notnull(x) else "N/A") # Using .2f for weight
                 unplaced_items_html += unplaced_display_df.to_html(index=False, escape=False, classes="details-table", border=0)
             else: unplaced_items_html += "<p>No displayable data found for unplaced items (columns missing or not mapped).</p>"
         elif unplaced_df.empty: unplaced_items_html += "<p>No unplaced items to display.</p>"
@@ -366,6 +369,8 @@ def generate_styled_html_report(report_df, summary_stats_dict, tote_config, all_
     sim_config_content_html += f"<p><span class='data-label'>Tote Width</span> <span class='data-value'>{tote_config.get('TOTE_MAX_WIDTH', 'N/A')} mm</span></p>"
     sim_config_content_html += f"<p><span class='data-label'>Tote Height</span> <span class='data-value'>{tote_config.get('TOTE_MAX_HEIGHT', 'N/A')} mm</span></p>"
     sim_config_content_html += f"<p><span class='data-label'>Height Map Resolution</span> <span class='data-value'>{tote_config.get('HEIGHT_MAP_RESOLUTION', 'N/A')} mm</span></p>"
+    sim_config_content_html += f"<p><span class='data-label'>Max Weight per Tote</span> <span class='data-value'>{tote_config.get('MAX_WEIGHT_PER_TOTE', 'N/A')} units</span></p>"
+    sim_config_content_html += f"<p><span class='data-label'>Max Unique SKUs per Tote</span> <span class='data-value'>{tote_config.get('MAX_UNIQUE_SKUS_PER_TOTE', 'N/A')}</span></p>"
     # Add other relevant config details using the same <p><span class='data-label'>...</span>...</p> format
 
     # --- Overall Packing Statistics Content ---
@@ -516,19 +521,20 @@ def generate_styled_html_report(report_df, summary_stats_dict, tote_config, all_
         if 'dimensions' in unplaced_df.columns:
             def format_unplaced_dims(dims):
                  if isinstance(dims, (list, tuple)) and len(dims) == 3:
-                     # Ensure numeric conversion before formatting
                      try: L, W, H = float(dims[0]), float(dims[1]), float(dims[2])
                      except (ValueError, TypeError): return "N/A"
                      return f"{L:.1f}x{W:.1f}x{H:.1f}"
                  return "N/A"
             unplaced_df['Formatted Dimensions'] = unplaced_df['dimensions'].apply(format_unplaced_dims)
             display_cols_unplaced['Formatted Dimensions'] = 'Dimensions (LxWxH)'
-        # Add Volume, Weight if available in unplaceable_items_log
+        if 'weight' in unplaced_df.columns: # Add weight to display
+            unplaced_df['Formatted Weight'] = pd.to_numeric(unplaced_df['weight'], errors='coerce').apply(lambda x: f"{x:.2f}" if pd.notnull(x) else "N/A")
+            display_cols_unplaced['Formatted Weight'] = 'Weight (units)'
 
-        cols_to_select = [col for col in display_cols_unplaced.keys() if col in unplaced_df.columns or col == 'Formatted Dimensions']
+        cols_to_select = [col for col in display_cols_unplaced.keys() if col in unplaced_df.columns or col.startswith('Formatted')]
         if cols_to_select:
             unplaced_display_df = unplaced_df[cols_to_select].rename(columns=display_cols_unplaced)
-            desired_order = ['SKU', 'Reason for Non-Placement', 'Dimensions (LxWxH)'] # Add Volume, Weight
+            desired_order = ['SKU', 'Reason for Non-Placement', 'Dimensions (LxWxH)', 'Weight (units)'] # Add Volume
             ordered_cols = [col for col in desired_order if col in unplaced_display_df.columns]
             remaining_cols = [col for col in unplaced_display_df.columns if col not in ordered_cols]
             unplaced_display_df = unplaced_display_df[ordered_cols + remaining_cols]
@@ -569,16 +575,32 @@ st.sidebar.header("Simulation Configuration")
 # --- Tote Configuration ---
 st.sidebar.subheader("Tote Dimensions (mm)")
 tote_length_input = st.sidebar.number_input(
-    "Tote Length", min_value=50, value=int(config.TOTE_MAX_LENGTH), step=10, key="tote_length" 
+    "Tote Length", min_value=50, value=int(config.TOTE_MAX_LENGTH), step=10, key="tote_length"
 )
 tote_width_input = st.sidebar.number_input(
-    "Tote Width", min_value=50, value=int(config.TOTE_MAX_WIDTH), step=10, key="tote_width" 
+    "Tote Width", min_value=50, value=int(config.TOTE_MAX_WIDTH), step=10, key="tote_width"
 )
 tote_height_input = st.sidebar.number_input(
-    "Tote Height", min_value=50, value=int(config.TOTE_MAX_HEIGHT), step=10, key="tote_height" 
+    "Tote Height", min_value=50, value=int(config.TOTE_MAX_HEIGHT), step=10, key="tote_height"
 )
 height_map_resolution_input = st.sidebar.number_input(
     "Height Map Resolution (mm)", min_value=1, value=config.HEIGHT_MAP_RESOLUTION, step=1, key="height_map_resolution"
+)
+
+st.sidebar.subheader("Tote Constraints") # New subheader
+max_weight_input = st.sidebar.number_input(
+    "Max Weight per Tote (units)", # Assuming generic units, user should be aware
+    min_value=0.0,
+    value=getattr(config, 'DEFAULT_MAX_WEIGHT_PER_TOTE', 25.0), # Use default from config or fallback
+    step=0.5,
+    key="max_weight_per_tote"
+)
+max_skus_input = st.sidebar.number_input(
+    "Max Unique SKUs per Tote",
+    min_value=1,
+    value=getattr(config, 'DEFAULT_MAX_UNIQUE_SKUS_PER_TOTE', 3), # Use default from config or fallback
+    step=1,
+    key="max_unique_skus_per_tote"
 )
 
 # --- Case Generation ---
@@ -690,6 +712,13 @@ else:
             "SKU Column (Optional):", options=sku_options,
             index=get_col_index('sku_col', sku_options, 0), key="map_sku"
         )
+        # Add Weight Column Mapping
+        weight_options = ["No Weight Column"] + st.session_state.csv_headers
+        st.session_state.column_mappings['weight_col'] = st.sidebar.selectbox(
+            "Weight Column (Optional):", options=weight_options,
+            index=get_col_index('weight_col', weight_options, 0), # Default to "No Weight Column"
+            key="map_weight"
+        )
     elif uploaded_file and not st.session_state.csv_headers: 
         st.sidebar.warning("Could not read columns. Check CSV format or re-upload.")
 
@@ -715,7 +744,9 @@ if run_col.button("Run Simulation", key="run_button", type="primary", disabled=s
         "TOTE_MAX_VOLUME": int(tote_length_input * tote_width_input * tote_height_input),
         "HEIGHT_MAP_RESOLUTION": int(height_map_resolution_input),
         "GRID_DIM_X": max(1, math.ceil(int(tote_length_input) / int(height_map_resolution_input))),
-        "GRID_DIM_Y": max(1, math.ceil(int(tote_width_input) / int(height_map_resolution_input)))
+        "GRID_DIM_Y": max(1, math.ceil(int(tote_width_input) / int(height_map_resolution_input))),
+        "MAX_WEIGHT_PER_TOTE": float(max_weight_input), # Add from new sidebar input
+        "MAX_UNIQUE_SKUS_PER_TOTE": int(max_skus_input) # Add from new sidebar input
     }
 
     simulation_can_proceed = False
@@ -742,6 +773,7 @@ if run_col.button("Run Simulation", key="run_button", type="primary", disabled=s
             wid_col = st.session_state.column_mappings.get('width_col')
             hei_col = st.session_state.column_mappings.get('height_col')
             sku_col_map = st.session_state.column_mappings.get('sku_col')
+            weight_col_map = st.session_state.column_mappings.get('weight_col') # Get weight column
 
             if not all([len_col, wid_col, hei_col]):
                 st.error("Column mapping incomplete. Please select columns for Length, Width, and Height.")
@@ -749,7 +781,9 @@ if run_col.button("Run Simulation", key="run_button", type="primary", disabled=s
             else:
                 try:
                     uploaded_file.seek(0)
-                    columns_to_read = list(set(filter(None, [len_col, wid_col, hei_col, sku_col_map if sku_col_map != "Auto-generate SKU" else None])))
+                    columns_to_read = list(set(filter(None, [len_col, wid_col, hei_col, 
+                                                              sku_col_map if sku_col_map != "Auto-generate SKU" else None,
+                                                              weight_col_map if weight_col_map != "No Weight Column" else None])))
                     if not all(c in st.session_state.csv_headers for c in [len_col, wid_col, hei_col]):
                          st.error("Essential mapped columns not found in CSV headers.")
                          st.session_state.simulation_running = False 
@@ -788,9 +822,22 @@ if run_col.button("Run Simulation", key="run_button", type="primary", disabled=s
                                 sku_val = f"CSV_SKU_{index+1}"
                                 if sku_col_map and sku_col_map != "Auto-generate SKU" and sku_col_map in df.columns:
                                     sku_val = str(row[sku_col_map])
+                                
+                                case_weight = 0.0 # Default weight
+                                if weight_col_map and weight_col_map != "No Weight Column" and weight_col_map in df.columns:
+                                    try:
+                                        case_weight = float(row[weight_col_map])
+                                        if case_weight < 0: # Optional: ensure weight is not negative
+                                            st.warning(f"Negative weight found for SKU {sku_val} at row {index+1}. Using 0.0.")
+                                            case_weight = 0.0
+                                    except ValueError:
+                                        st.warning(f"Non-numeric weight for SKU {sku_val} at row {index+1}. Using 0.0.")
+                                        case_weight = 0.0
+                                
                                 current_input_cases.append({
                                     "sku": sku_val, "length": float(row[len_col]),
-                                    "width": float(row[wid_col]), "height": float(row[hei_col])
+                                    "width": float(row[wid_col]), "height": float(row[hei_col]),
+                                    "weight": case_weight # Add weight to the case data
                                 })
                             st.session_state.original_item_count = len(current_input_cases)
                             simulation_can_proceed = True

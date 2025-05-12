@@ -48,6 +48,7 @@ def attempt_place_case(case_obj, tote_obj):
 
 def add_case_to_tote_and_update_state(case_obj, tote_obj, placement_details):
     """Adds case to tote, updates simulation state, and records interim utilization."""
+    # ... existing code to place item and update height map ...
     case_obj["chosen_orientation_dims"] = placement_details["chosen_orientation_dims"]
     case_obj["position_in_tote_grid"] = placement_details["position_in_tote_grid"]
     case_obj["placement_z_level"] = placement_details["placement_z_level"]
@@ -68,7 +69,9 @@ def add_case_to_tote_and_update_state(case_obj, tote_obj, placement_details):
                 tote_obj["height_map"][current_grid_x][current_grid_y] = new_surface_height
 
     tote_obj["items"].append(case_obj) # Add case to items list
-    tote_obj["remaining_volume"] -= case_obj["volume"] # Update remaining volume
+    tote_obj["remaining_volume"] -= case_obj["volume"] # Keep this for volumetric checks
+    tote_obj["current_weight"] += case_obj.get("weight", 0) # Add this
+    tote_obj["current_skus"].add(case_obj.get("sku")) # Add this
 
     # Calculate and store interim utilization on the case object itself
     utilized_volume_now = tote_obj["max_volume"] - tote_obj["remaining_volume"]
@@ -108,12 +111,15 @@ def generate_test_cases(num_cases, seed=None, current_tote_config=None): # Added
         l = random.randint(50, max(51, max_l_bound))
         w = random.randint(50, max(51, max_w_bound))
         h = random.randint(50, max(51, max_h_bound))
+        # Generate random weight (e.g., between 0.1 and 5.0 units)
+        weight = round(random.uniform(0.1, 5.0), 2)
+
 
         # Ensure dimensions are at least twice the resolution
         l = max(l, 2 * h_map_res)
         w = max(w, 2 * h_map_res)
         h = max(h, 2 * h_map_res)
-        test_cases_data.append({"sku": f"SKU{i+1:03}", "length": l, "width": w, "height": h})
+        test_cases_data.append({"sku": f"SKU{i+1:03}", "length": l, "width": w, "height": h, "weight": weight})
     return test_cases_data
 
 def run_simulation_for_visualization_data(case_data_list, current_tote_config): # Added current_tote_config
@@ -130,8 +136,10 @@ def run_simulation_for_visualization_data(case_data_list, current_tote_config): 
     processed_cases = 0
 
     next_tote_id = 1
-    # Use current_tote_config for creating totes
-    current_tote = core_utils.create_new_empty_tote(next_tote_id, current_tote_config)
+    # Use current_tote_config for creating totes, including new weight/SKU params
+    max_weight_per_tote = current_tote_config.get("MAX_WEIGHT_PER_TOTE", float('inf')) # Default if not in config
+    max_unique_skus_per_tote = current_tote_config.get("MAX_UNIQUE_SKUS_PER_TOTE", float('inf')) # Default if not in config
+    current_tote = core_utils.create_new_empty_tote(next_tote_id, current_tote_config, max_weight_per_tote, max_unique_skus_per_tote)
 
     status_message = f"Starting simulation with {total_cases} cases..."
     print(status_message) # Keep console log for debugging if needed
@@ -152,7 +160,8 @@ def run_simulation_for_visualization_data(case_data_list, current_tote_config): 
             case_raw_data["sku"],
             case_raw_data["length"],
             case_raw_data["width"],
-            case_raw_data["height"]
+            case_raw_data["height"],
+            case_raw_data.get("weight", 0) # Pass weight, default to 0 if not present
         )
         # Use current_tote_config for checks
         is_fundamentally_too_large_vol = current_case["volume"] > current_tote_config["TOTE_MAX_VOLUME"]
@@ -169,40 +178,85 @@ def run_simulation_for_visualization_data(case_data_list, current_tote_config): 
             status_message = f"Case SKU {current_case['sku']} is fundamentally too large ({reason}). Skipping."
             print(f"  LOG: {status_message}")
             unplaceable_cases_log.append({
-                "sku": current_case['sku'], 
+                "sku": current_case['sku'],
                 "reason": f"Fundamentally too large ({reason})",
-                "dimensions": current_case["original_dims"] # Add original dimensions
+                "dimensions": current_case["original_dims"],
+                "weight": current_case.get("weight", 0)
             })
-            # Yield progress even when skipping
             yield {
-                "progress": progress,
-                "status_message": status_message,
-                "intermediate_totes_data": copy.deepcopy(all_processed_totes_full_data + ([current_tote] if current_tote else [])), # Include current tote state
-                "intermediate_vis_data": copy.deepcopy(visualization_output_list),
+                "progress": progress, "status_message": status_message,
+                "intermediate_totes_data": copy.deepcopy(all_processed_totes_full_data + ([current_tote] if current_tote else [])),
+                "intermediate_vis_data": copy.deepcopy(visualization_output_list), # Will be rebuilt later
                 "unplaceable_log": copy.deepcopy(unplaceable_cases_log)
             }
             continue
 
-        # attempt_place_case internally uses tote_obj's dimensions
-        placement_details = attempt_place_case(current_case, current_tote)
-        can_fit_volumetrically = current_case["volume"] <= current_tote["remaining_volume"]
+        # New checks and logic
+        can_add_to_current_tote = True
+        reason_for_new_tote = ""
 
-        if placement_details["can_fit"] and can_fit_volumetrically:
+        # 1. Weight Check for current_tote
+        if (current_tote["current_weight"] + current_case["weight"]) > current_tote["max_weight"]:
+            can_add_to_current_tote = False
+            reason_for_new_tote = "max weight exceeded"
+
+        # 2. SKU Check for current_tote (if weight check passed)
+        if can_add_to_current_tote:
+            is_new_sku = current_case["sku"] not in current_tote["current_skus"]
+            if is_new_sku and (len(current_tote["current_skus"]) + 1) > current_tote["max_unique_skus"]:
+                can_add_to_current_tote = False
+                reason_for_new_tote = "max unique SKUs exceeded"
+        
+        # 3. Spatial/Volumetric Check for current_tote (if weight and SKU checks passed)
+        placement_details = {"can_fit": False} # Initialize
+        can_fit_volumetrically = False
+        if can_add_to_current_tote:
+            placement_details = attempt_place_case(current_case, current_tote)
+            can_fit_volumetrically = current_case["volume"] <= current_tote["remaining_volume"]
+            if not (placement_details["can_fit"] and can_fit_volumetrically):
+                can_add_to_current_tote = False
+                reason_for_new_tote = "spatial/volume constraints" if not placement_details["can_fit"] else "insufficient remaining volume"
+
+        # Decision Point
+        if can_add_to_current_tote:
             add_case_to_tote_and_update_state(current_case, current_tote, placement_details)
             status_message = f"Placed {current_case['sku']} in Tote {current_tote['id']} (Util: {current_case['interim_tote_utilization_at_placement']:.1f}%)"
             print(f"  SUCCESS: {status_message}")
-        else:
-            fit_reason = "no spatial fit" if not placement_details["can_fit"] else "insufficient remaining volume"
-            status_message = f"Case {current_case['sku']} doesn't fit Tote {current_tote['id']} ({fit_reason}). Finalizing tote."
+        else: # Cannot add to current tote
+            status_message = f"Case {current_case['sku']} doesn't fit Tote {current_tote['id']} ({reason_for_new_tote}). Finalizing tote."
             print(f"  INFO: {status_message}")
             finalize_and_store_tote(current_tote, all_processed_totes_full_data)
 
             next_tote_id += 1
-            # Use current_tote_config for new totes
-            current_tote = core_utils.create_new_empty_tote(next_tote_id, current_tote_config)
+            # Use current_tote_config for new totes, including new weight/SKU params
+            current_tote = core_utils.create_new_empty_tote(next_tote_id, current_tote_config, max_weight_per_tote, max_unique_skus_per_tote)
             status_message = f"Started new Tote {current_tote['id']}."
             print(f"  INFO: {status_message}")
 
+            # Now, re-evaluate for the new_tote
+            # A. Check fundamental unplaceability for new tote (e.g., case's own weight > new_tote.max_weight)
+            if current_case["weight"] > current_tote["max_weight"]:
+                unplaceable_cases_log.append({
+                    "sku": current_case['sku'],
+                    "reason": f"Case weight ({current_case['weight']}) exceeds new tote max weight ({current_tote['max_weight']})",
+                    "dimensions": current_case["original_dims"],
+                    "weight": current_case["weight"]
+                })
+                status_message = f"Case {current_case['sku']} unplaceable (too heavy for any tote)."
+                print(f"  ERROR: {status_message}")
+                # Yield progress and continue to next case; the new empty tote remains active
+                yield {
+                    "progress": progress, "status_message": status_message,
+                    "intermediate_totes_data": copy.deepcopy(all_processed_totes_full_data + [current_tote]),
+                    "intermediate_vis_data": copy.deepcopy(visualization_output_list), # Will be rebuilt
+                    "unplaceable_log": copy.deepcopy(unplaceable_cases_log)
+                }
+                continue # to next case
+
+            # B. SKU check for new tote (will always pass for the first item unless max_unique_skus is 0 or invalid)
+            # This is implicitly handled as current_tote["current_skus"] is empty.
+
+            # C. Spatial/Volumetric Check for new_tote
             placement_details_new_tote = attempt_place_case(current_case, current_tote)
             can_fit_new_tote_volumetrically = current_case["volume"] <= current_tote["remaining_volume"]
 
@@ -211,14 +265,16 @@ def run_simulation_for_visualization_data(case_data_list, current_tote_config): 
                 status_message = f"Placed {current_case['sku']} in new Tote {current_tote['id']} (Util: {current_case['interim_tote_utilization_at_placement']:.1f}%)"
                 print(f"  SUCCESS: {status_message}")
             else:
-                reason_new_tote = "no spatial fit" if not placement_details_new_tote["can_fit"] else "insufficient volume (unexpected)"
-                status_message = f"Case SKU {current_case['sku']} could not be placed even in new Tote {current_tote['id']} ({reason_new_tote}). Skipping."
+                reason_new_tote = "no spatial fit" if not placement_details_new_tote["can_fit"] else "insufficient volume"
+                status_message = f"Case SKU {current_case['sku']} could not be placed even in new Tote {current_tote['id']} ({reason_new_tote}). Marking unplaceable."
                 print(f"  ERROR: {status_message}")
                 unplaceable_cases_log.append({
-                    "sku": current_case['sku'], 
-                    "reason": f"Could not fit new empty tote ({reason_new_tote})",
-                    "dimensions": current_case["original_dims"] # Add original dimensions
+                    "sku": current_case['sku'],
+                    "reason": f"Cannot fit new empty tote ({reason_new_tote})",
+                    "dimensions": current_case["original_dims"],
+                    "weight": current_case["weight"]
                 })
+                # The empty new tote remains active for the next case.
 
         # --- Prepare data for visualization list (do this incrementally) ---
         # Find the tote the item was *actually* placed in (could be current_tote or the last one in all_processed_totes_full_data if a new one was just started)
