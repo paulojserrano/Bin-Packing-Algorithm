@@ -122,16 +122,23 @@ def generate_test_cases(num_cases, seed=None, current_tote_config=None): # Added
         test_cases_data.append({"sku": f"SKU{i+1:03}", "length": l, "width": w, "height": h, "weight": weight})
     return test_cases_data
 
-def run_simulation_for_visualization_data(case_data_list, current_tote_config): # Added current_tote_config
+def run_simulation_for_visualization_data(
+    case_data_list, 
+    current_tote_config, 
+    use_tray_logic: bool = False, 
+    tray_cutoff_decimal: float = 0.0
+):
     """
     Runs the packing simulation as a generator, yielding progress and intermediate results.
     Uses provided current_tote_config for tote dimensions and properties.
+    Includes optional tray diversion logic.
     Yields dictionaries with 'progress', 'status_message', 'intermediate_totes_data',
     'intermediate_vis_data', and 'unplaceable_log'.
     """
     all_processed_totes_full_data = []
     visualization_output_list = []
     unplaceable_cases_log = []
+    trays = [] # List to store cases diverted to trays
     total_cases = len(case_data_list)
     processed_cases = 0
 
@@ -148,12 +155,14 @@ def run_simulation_for_visualization_data(case_data_list, current_tote_config): 
         "status_message": status_message,
         "intermediate_totes_data": [],
         "intermediate_vis_data": [],
-        "unplaceable_log": []
+        "unplaceable_log": [],
+        "trays_data": [] # Initial tray data
     }
 
     for i, case_raw_data in enumerate(case_data_list):
         processed_cases = i + 1
         progress = processed_cases / total_cases if total_cases > 0 else 0.0
+        case_diverted_to_tray = False # Flag for current case
         status_message = f"Processing case {processed_cases}/{total_cases} (SKU: {case_raw_data.get('sku', 'N/A')})..."
 
         current_case = core_utils.get_case_properties(
@@ -163,36 +172,81 @@ def run_simulation_for_visualization_data(case_data_list, current_tote_config): 
             case_raw_data["height"],
             case_raw_data.get("weight", 0) # Pass weight, default to 0 if not present
         )
-        # Use current_tote_config for checks
-        is_fundamentally_too_large_vol = current_case["volume"] > current_tote_config["TOTE_MAX_VOLUME"]
-        can_orient_to_fit_empty_tote_dims = any(
-            l_o <= current_tote_config["TOTE_MAX_LENGTH"] and \
-            w_o <= current_tote_config["TOTE_MAX_WIDTH"] and \
-            h_o <= current_tote_config["TOTE_MAX_HEIGHT"]
-            for l_o, w_o, h_o in current_case["orientations"]
-        )
-        is_fundamentally_too_large_dims = not can_orient_to_fit_empty_tote_dims
 
-        if is_fundamentally_too_large_vol or is_fundamentally_too_large_dims:
-            reason = "volume" if is_fundamentally_too_large_vol else "dimensions"
-            status_message = f"Case SKU {current_case['sku']} is fundamentally too large ({reason}). Skipping."
-            print(f"  LOG: {status_message}")
-            unplaceable_cases_log.append({
-                "sku": current_case['sku'],
-                "reason": f"Fundamentally too large ({reason})",
-                "dimensions": current_case["original_dims"],
-                "weight": current_case.get("weight", 0)
-            })
-            yield {
-                "progress": progress, "status_message": status_message,
-                "intermediate_totes_data": copy.deepcopy(all_processed_totes_full_data + ([current_tote] if current_tote else [])),
-                "intermediate_vis_data": copy.deepcopy(visualization_output_list), # Will be rebuilt later
-                "unplaceable_log": copy.deepcopy(unplaceable_cases_log)
-            }
-            continue
+        # --- Tray Diversion Logic ---
+        if use_tray_logic:
+            # Check if the case can fit into a completely empty standard tote
+            # This uses the same logic as the "fundamentally_too_large_dims" check
+            case_fits_in_empty_tote = any(
+                l_o <= current_tote_config["TOTE_MAX_LENGTH"] and \
+                w_o <= current_tote_config["TOTE_MAX_WIDTH"] and \
+                h_o <= current_tote_config["TOTE_MAX_HEIGHT"]
+                for l_o, w_o, h_o in current_case["orientations"]
+            )
 
-        # New checks and logic
-        can_add_to_current_tote = True
+            if case_fits_in_empty_tote:
+                case_volume = current_case["volume"]
+                # Tote volume is from current_tote_config, representing an empty standard tote
+                tote_volume = current_tote_config["TOTE_MAX_VOLUME"]
+                
+                if tote_volume > 0: # Avoid division by zero
+                    utilization = case_volume / tote_volume
+                    if utilization >= tray_cutoff_decimal:
+                        trays.append({
+                            'case_id': current_case['sku'],
+                            'dimensions': current_case['original_dims'], # Store original (L,W,H) tuple
+                            'volume': case_volume,
+                            'tote_utilization': utilization,
+                            'weight': current_case.get('weight', 0) # Also store weight
+                        })
+                        case_diverted_to_tray = True
+                        status_message = f"Case SKU {current_case['sku']} diverted to tray (utilization: {utilization*100:.2f}%)."
+                        print(f"  LOG: {status_message}")
+                        yield {
+                            "progress": progress, "status_message": status_message,
+                            "intermediate_totes_data": copy.deepcopy(all_processed_totes_full_data + ([current_tote] if current_tote else [])),
+                            "intermediate_vis_data": copy.deepcopy(visualization_output_list),
+                            "unplaceable_log": copy.deepcopy(unplaceable_cases_log),
+                            "trays_data": copy.deepcopy(trays)
+                        }
+                        continue # Move to the next case
+                else: # tote_volume is 0 or less, should not happen with valid config
+                    print(f"  WARNING: Tote volume is {tote_volume} for tray logic check. Skipping tray diversion for SKU {current_case['sku']}.")
+
+
+        # --- Standard Packing Logic (only if not diverted to tray) ---
+        if not case_diverted_to_tray:
+            # Use current_tote_config for checks
+            is_fundamentally_too_large_vol = current_case["volume"] > current_tote_config["TOTE_MAX_VOLUME"]
+            can_orient_to_fit_empty_tote_dims = any(
+                l_o <= current_tote_config["TOTE_MAX_LENGTH"] and \
+                w_o <= current_tote_config["TOTE_MAX_WIDTH"] and \
+                h_o <= current_tote_config["TOTE_MAX_HEIGHT"]
+                for l_o, w_o, h_o in current_case["orientations"]
+            )
+            is_fundamentally_too_large_dims = not can_orient_to_fit_empty_tote_dims
+
+            if is_fundamentally_too_large_vol or is_fundamentally_too_large_dims:
+                reason = "volume" if is_fundamentally_too_large_vol else "dimensions"
+                status_message = f"Case SKU {current_case['sku']} is fundamentally too large ({reason}). Skipping."
+                print(f"  LOG: {status_message}")
+                unplaceable_cases_log.append({
+                    "sku": current_case['sku'],
+                    "reason": f"Fundamentally too large ({reason})",
+                    "dimensions": current_case["original_dims"],
+                    "weight": current_case.get("weight", 0)
+                })
+                yield {
+                    "progress": progress, "status_message": status_message,
+                    "intermediate_totes_data": copy.deepcopy(all_processed_totes_full_data + ([current_tote] if current_tote else [])),
+                    "intermediate_vis_data": copy.deepcopy(visualization_output_list), 
+                    "unplaceable_log": copy.deepcopy(unplaceable_cases_log),
+                    "trays_data": copy.deepcopy(trays)
+                }
+                continue
+
+            # Existing checks and logic for packing into totes
+            can_add_to_current_tote = True
         reason_for_new_tote = ""
 
         # 1. Weight Check for current_tote
@@ -248,8 +302,9 @@ def run_simulation_for_visualization_data(case_data_list, current_tote_config): 
                 yield {
                     "progress": progress, "status_message": status_message,
                     "intermediate_totes_data": copy.deepcopy(all_processed_totes_full_data + [current_tote]),
-                    "intermediate_vis_data": copy.deepcopy(visualization_output_list), # Will be rebuilt
-                    "unplaceable_log": copy.deepcopy(unplaceable_cases_log)
+                    "intermediate_vis_data": copy.deepcopy(visualization_output_list), 
+                    "unplaceable_log": copy.deepcopy(unplaceable_cases_log),
+                    "trays_data": copy.deepcopy(trays)
                 }
                 continue # to next case
 
@@ -327,8 +382,9 @@ def run_simulation_for_visualization_data(case_data_list, current_tote_config): 
             "status_message": status_message,
             # Combine finalized totes with the current active tote for intermediate display
             "intermediate_totes_data": copy.deepcopy(all_processed_totes_full_data + ([current_tote] if current_tote else [])),
-            "intermediate_vis_data": copy.deepcopy(current_visualization_output_list), # Use the rebuilt list
-            "unplaceable_log": copy.deepcopy(unplaceable_cases_log)
+            "intermediate_vis_data": copy.deepcopy(current_visualization_output_list), 
+            "unplaceable_log": copy.deepcopy(unplaceable_cases_log),
+            "trays_data": copy.deepcopy(trays)
         }
 
 
@@ -361,20 +417,26 @@ def run_simulation_for_visualization_data(case_data_list, current_tote_config): 
                 "current_tote_utilization_percent": item.get("interim_tote_utilization_at_placement", 0.0)
             })
 
-    final_status = f"Simulation finished. Processed {len(all_processed_totes_full_data)} totes. Placed: {len(final_visualization_output_list)}. Unplaceable: {len(unplaceable_cases_log)}."
+    final_status = f"Simulation finished. Processed {len(all_processed_totes_full_data)} totes. Placed: {len(final_visualization_output_list)}. Diverted to Trays: {len(trays)}. Unplaceable: {len(unplaceable_cases_log)}."
     print(final_status)
     if unplaceable_cases_log:
          print("Unplaceable items:")
          for entry in unplaceable_cases_log:
               print(f"  - SKU: {entry['sku']}, Reason: {entry['reason']}")
+    if trays:
+        print("Cases diverted to trays:")
+        for tray_case in trays:
+            print(f"  - SKU: {tray_case['case_id']}, Utilization: {tray_case['tote_utilization']*100:.2f}%")
+
 
     yield {
         "progress": 1.0,
         "status_message": final_status,
-        "intermediate_totes_data": copy.deepcopy(all_processed_totes_full_data), # Final tote data
-        "intermediate_vis_data": copy.deepcopy(final_visualization_output_list), # Final vis data
+        "intermediate_totes_data": copy.deepcopy(all_processed_totes_full_data), 
+        "intermediate_vis_data": copy.deepcopy(final_visualization_output_list), 
         "unplaceable_log": copy.deepcopy(unplaceable_cases_log),
-        "is_final": True # Add a flag to indicate completion
+        "trays_data": copy.deepcopy(trays), # Final tray data
+        "is_final": True 
     }
 
     # The generator naturally stops here after the final yield.

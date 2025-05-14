@@ -318,6 +318,11 @@
             </div>
         </section>
 
+        <section id="tray-cases-details">
+             <!-- Placeholder for Tray Cases Details -->
+             {{ dynamic_tray_cases_details_content }}
+        </section>
+
         <section id="tote-details-section">
             <h2>Individual Tote Details</h2>
             <div class="controls-container">
@@ -330,6 +335,7 @@
                     <select id="sortCriteria" onchange="sortToteDetailsHTMLReport()">
                         <option value="tote_id">Tote ID (Default)</option>
                         <option value="item_count">Item Count</option>
+                        <option value="current_weight">Weight (units)</option> 
                         <!-- <option value="total_volume">Total Volume</option> --> <!-- Placeholder, app.py needs to provide this data -->
                         <option value="volume_utilization">Volume Utilization</option>
                     </select>
@@ -415,6 +421,10 @@
                 case 'item_count': // Matches data-item-count
                     valA = parseInt(a.dataset.itemCount, 10);
                     valB = parseInt(b.dataset.itemCount, 10);
+                    break;
+                case 'current_weight': // Matches data-current-weight
+                    valA = parseFloat(a.dataset.currentWeight);
+                    valB = parseFloat(b.dataset.currentWeight);
                     break;
                 // case 'total_volume': // Matches data-total-volume - app.py needs to provide this
                 //     valA = parseFloat(a.dataset.totalVolume);

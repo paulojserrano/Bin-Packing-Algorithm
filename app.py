@@ -78,7 +78,8 @@ if 'simulation_results' not in st.session_state:
     st.session_state.simulation_results = {
         'visualization_output_list': [],
         'full_totes_summary_data': [],
-        'unplaceable_items_log': [] # Added for unplaced items
+        'unplaceable_items_log': [], # Added for unplaced items
+        'trays_data': [] # Added for tray feature
     }
 if 'original_item_count' not in st.session_state: # To store original item count for captions
     st.session_state.original_item_count = 0
@@ -104,7 +105,16 @@ if 'current_tote_config_for_report' not in st.session_state: # For HTML report
 
 
 # --- HTML Report Generation Function ---
-def generate_styled_html_report(report_df, summary_stats_dict, tote_config, all_totes_data, unplaceable_items_log):
+def generate_styled_html_report(
+    report_df, 
+    summary_stats_dict, 
+    tote_config, 
+    all_totes_data, 
+    unplaceable_items_log,
+    trays_data_list, # New parameter
+    tray_feature_enabled_report, # New parameter
+    tray_cutoff_percentage_report # New parameter
+    ):
     report_title = "Bin Packing Simulation Report"
     generation_time = pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
 
@@ -125,6 +135,11 @@ def generate_styled_html_report(report_df, summary_stats_dict, tote_config, all_
     sim_config_html += f"<p><strong>Height Map Resolution:</strong> {tote_config.get('HEIGHT_MAP_RESOLUTION', 'N/A')} mm</p>"
     sim_config_html += f"<p><strong>Max Weight per Tote:</strong> {tote_config.get('MAX_WEIGHT_PER_TOTE', 'N/A')} units</p>"
     sim_config_html += f"<p><strong>Max Unique SKUs per Tote:</strong> {tote_config.get('MAX_UNIQUE_SKUS_PER_TOTE', 'N/A')}</p>"
+    if tray_feature_enabled_report:
+        sim_config_html += f"<p><strong>Tray Diversion Enabled:</strong> Yes</p>"
+        sim_config_html += f"<p><strong>Tray Utilization Cutoff:</strong> {tray_cutoff_percentage_report:.2f}%</p>"
+    else:
+        sim_config_html += f"<p><strong>Tray Diversion Enabled:</strong> No</p>"
     sim_config_html += "</div>"
 
     # --- Overall Packing Statistics Section ---
@@ -153,6 +168,12 @@ def generate_styled_html_report(report_df, summary_stats_dict, tote_config, all_
     overall_stats_html += f"<p><strong>Avg. Totes per SKU:</strong> {avg_totes_sku_str}</p>"
     most_freq_sku_str = str(summary_stats_dict.get('most_frequent_sku', 'N/A'))
     overall_stats_html += f"<p><strong>Most Frequent SKU:</strong> {most_freq_sku_str}</p>"
+    
+    # Tray Statistics (add to overall stats)
+    if tray_feature_enabled_report:
+        overall_stats_html += f"<p><strong>Total Cases Diverted to Trays:</strong> {summary_stats_dict.get('total_trays_used', 'N/A')}</p>"
+        overall_stats_html += f"<p><strong>Percentage of Cases to Trays:</strong> {summary_stats_dict.get('percentage_cases_to_trays', 0.0):.2f}%</p>"
+
     utilization_percentages_for_hist = [
         tote.get('utilization_percent', 0.0)
         for tote in all_totes_data
@@ -182,11 +203,35 @@ def generate_styled_html_report(report_df, summary_stats_dict, tote_config, all_
         overall_stats_html += "<p><em>No utilization data available for histogram.</em></p>"
     overall_stats_html += "</div>"
 
+    overall_stats_html += "</div>"
+
+    # --- Tray Cases Details Section (New Section) ---
+    tray_cases_details_html = ""
+    if tray_feature_enabled_report:
+        tray_cases_details_html += "<div class='section tray-cases-details'>"
+        tray_cases_details_html += "<h2 class='section-title'>Cases Diverted to Trays</h2>"
+        if trays_data_list:
+            tray_cases_details_html += f"<p>Total Trays Used: {len(trays_data_list)}</p>"
+            # Create a DataFrame for easier HTML table generation
+            trays_df = pd.DataFrame(trays_data_list)
+            # Format dimensions for display: (L, W, H) from tuple/list
+            trays_df['dimensions_str'] = trays_df['dimensions'].apply(lambda d: f"{d[0]} x {d[1]} x {d[2]}" if isinstance(d, (list, tuple)) and len(d) == 3 else "N/A")
+            trays_df['volume_str'] = trays_df['volume'].apply(lambda v: f"{v:.2f}")
+            trays_df['tote_utilization_str'] = trays_df['tote_utilization'].apply(lambda u: f"{(u * 100):.2f}%")
+            
+            display_trays_df = trays_df[['case_id', 'dimensions_str', 'volume_str', 'tote_utilization_str']].copy()
+            display_trays_df.columns = ['Case ID', 'Dimensions (L x W x H)', 'Volume', 'Empty Tote Utilization']
+            tray_cases_details_html += display_trays_df.to_html(index=False, escape=False, classes="details-table", border=0)
+        else:
+            tray_cases_details_html += "<p>No cases met the criteria for tray diversion.</p>"
+        tray_cases_details_html += "</div>"
+
+
     # --- Unplaced Items Section ---
     unplaced_items_html = ""
     if unplaceable_items_log:
-        unplaced_items_html += "<div class='section'>"
-        unplaced_items_html += "<details class='tote-details-collapsible' style='border-color: #ffc107;' open>"
+        unplaced_items_html += "<div class='section'>" # Keep this class for styling if needed
+        unplaced_items_html += "<details class='tote-details-collapsible' style='border-color: #ffc107;' open>" # Existing style
         unplaced_items_html += "<summary style='background-color: #fff3cd; color: #856404; font-weight: bold;'>"
         unplaced_items_html += f"Unplaced Items ({len(unplaceable_items_log)}) - Click to Expand/Collapse"
         unplaced_items_html += "</summary>"
@@ -371,7 +416,11 @@ def generate_styled_html_report(report_df, summary_stats_dict, tote_config, all_
     sim_config_content_html += f"<p><span class='data-label'>Height Map Resolution</span> <span class='data-value'>{tote_config.get('HEIGHT_MAP_RESOLUTION', 'N/A')} mm</span></p>"
     sim_config_content_html += f"<p><span class='data-label'>Max Weight per Tote</span> <span class='data-value'>{tote_config.get('MAX_WEIGHT_PER_TOTE', 'N/A')} units</span></p>"
     sim_config_content_html += f"<p><span class='data-label'>Max Unique SKUs per Tote</span> <span class='data-value'>{tote_config.get('MAX_UNIQUE_SKUS_PER_TOTE', 'N/A')}</span></p>"
-    # Add other relevant config details using the same <p><span class='data-label'>...</span>...</p> format
+    if tray_feature_enabled_report:
+        sim_config_content_html += f"<p><span class='data-label'>Tray Diversion Enabled</span> <span class='data-value'>Yes</span></p>"
+        sim_config_content_html += f"<p><span class='data-label'>Tray Utilization Cutoff</span> <span class='data-value'>{tray_cutoff_percentage_report:.2f}%</span></p>"
+    else:
+        sim_config_content_html += f"<p><span class='data-label'>Tray Diversion Enabled</span> <span class='data-value'>No</span></p>"
 
     # --- Overall Packing Statistics Content ---
     overall_stats_content_html = f"<p><span class='data-label'>Total Totes Used</span> <span class='data-value'>{summary_stats_dict.get('total_totes_used', 'N/A')}</span></p>"
@@ -390,8 +439,11 @@ def generate_styled_html_report(report_df, summary_stats_dict, tote_config, all_
     overall_stats_content_html += f"<p><span class='data-label'>Cases That Did Not Fit</span> <span class='data-value'>{unplaced_text}</span></p>"
     avg_items_str = f"{summary_stats_dict.get('avg_items_per_tote', 0.0):.2f}"
     overall_stats_content_html += f"<p><span class='data-label'>Average Items per Tote</span> <span class='data-value'>{avg_items_str}</span></p>"
-    # Add other overall stats using the same format
 
+    if tray_feature_enabled_report:
+        overall_stats_content_html += f"<p><span class='data-label'>Total Cases Diverted to Trays</span> <span class='data-value'>{summary_stats_dict.get('total_trays_used', 'N/A')}</span></p>"
+        overall_stats_content_html += f"<p><span class='data-label'>Percentage of Cases to Trays</span> <span class='data-value'>{summary_stats_dict.get('percentage_cases_to_trays', 0.0):.2f}%</span></p>"
+    
     # Histogram (optional, kept from previous logic)
     utilization_percentages_for_hist = [t.get('utilization_percent', 0.0) for t in all_totes_data if t.get('utilization_percent') is not None]
     if utilization_percentages_for_hist:
@@ -411,6 +463,32 @@ def generate_styled_html_report(report_df, summary_stats_dict, tote_config, all_
             overall_stats_content_html += f"<p><em>Error generating utilization histogram: {str(e)}</em></p>"
             if 'fig_hist_report' in locals() and fig_hist_report: plt.close(fig_hist_report)
 
+    # Histogram for Tote Weights
+    tote_weights_for_hist = [t.get('current_weight', 0.0) for t in all_totes_data if t.get('current_weight') is not None]
+    if tote_weights_for_hist:
+        overall_stats_content_html += "<h4 style='margin-top: 25px; margin-bottom: 10px;'>Distribution of Tote Weights:</h4>"
+        try:
+            fig_weight_hist, ax_weight_hist = plt.subplots(figsize=(6, 3.5))
+            ax_weight_hist.hist(tote_weights_for_hist, bins='auto', color='lightcoral', edgecolor='black', alpha=0.75)
+            ax_weight_hist.set_title('Tote Weight Distribution', fontsize=11)
+            ax_weight_hist.set_xlabel('Weight (units)', fontsize=9)
+            ax_weight_hist.set_ylabel('Number of Totes', fontsize=9)
+            ax_weight_hist.tick_params(axis='both', which='major', labelsize=8)
+            ax_weight_hist.grid(axis='y', linestyle='--', alpha=0.7)
+            fig_weight_hist.tight_layout(pad=0.8)
+            buf_weight_hist = io.BytesIO()
+            fig_weight_hist.savefig(buf_weight_hist, format='png', dpi=90)
+            buf_weight_hist.seek(0)
+            img_base64_weight_hist = base64.b64encode(buf_weight_hist.getvalue()).decode('utf-8')
+            overall_stats_content_html += f"<div class='tote-image-container' style='max-width: 550px; margin-left: auto; margin-right: auto;'><img src='data:image/png;base64,{img_base64_weight_hist}' alt='Tote Weight Histogram'></div>"
+            plt.close(fig_weight_hist)
+        except Exception as e:
+            overall_stats_content_html += f"<p><em>Error generating weight histogram: {str(e)}</em></p>"
+            if 'fig_weight_hist' in locals() and fig_weight_hist: plt.close(fig_weight_hist)
+    else:
+        overall_stats_content_html += "<p><em>No weight data available for histogram.</em></p>"
+
+
     # --- Individual Tote Details Container Content ---
     tote_details_container_html = ""
     if all_totes_data:
@@ -419,6 +497,7 @@ def generate_styled_html_report(report_df, summary_stats_dict, tote_config, all_
             items_in_tote_list = tote_summary_info.get('items', [])
             utilization = tote_summary_info.get('utilization_percent', 0.0)
             items_packed_count = len(items_in_tote_list)
+            current_weight = tote_summary_info.get('current_weight', 0.0) # Get current_weight
             skus_in_tote_list = sorted(list(set(item.get('sku', '') for item in items_in_tote_list if item.get('sku'))))
             skus_in_tote_attr_str = ",".join(skus_in_tote_list)
 
@@ -426,8 +505,8 @@ def generate_styled_html_report(report_df, summary_stats_dict, tote_config, all_
             if utilization < 70: util_badge_class = "badge-warning"
             if utilization < 50: util_badge_class = "badge-danger"
             
-            # Data attributes for sorting (match JS: tote_id, item_count, volume_utilization)
-            tote_details_container_html += f"<div class='tote-wrapper' data-tote-id='{tote_id}' data-item-count='{items_packed_count}' data-volume-utilization='{utilization:.2f}'>"
+            # Data attributes for sorting (match JS: tote_id, item_count, volume_utilization, current_weight)
+            tote_details_container_html += f"<div class='tote-wrapper' data-tote-id='{tote_id}' data-item-count='{items_packed_count}' data-volume-utilization='{utilization:.2f}' data-current-weight='{current_weight:.2f}'>" # Added data-current-weight
             tote_details_container_html += "<details class='tote-details-collapsible'>"
             
             # Summary with grid
@@ -435,7 +514,7 @@ def generate_styled_html_report(report_df, summary_stats_dict, tote_config, all_
             tote_details_container_html += "<div class='tote-summary-grid'>"
             tote_details_container_html += f"<span>Items: <strong>{items_packed_count}</strong></span>"
             tote_details_container_html += f"<span>Util: <strong class='badge {util_badge_class}'>{utilization:.2f}%</strong></span>"
-            # Add total volume/weight to summary grid if available
+            tote_details_container_html += f"<span>Weight: <strong>{current_weight:.2f} units</strong></span>" # Added Weight to summary grid
             tote_details_container_html += "</div></summary>"
             
             # Details Content
@@ -563,6 +642,7 @@ def generate_styled_html_report(report_df, summary_stats_dict, tote_config, all_
     final_html = final_html.replace("{{ methodology_section_content }}", methodology_section_content_html)
     final_html = final_html.replace("{{ dynamic_simulation_configuration_content }}", sim_config_content_html)
     final_html = final_html.replace("{{ dynamic_overall_statistics_content }}", overall_stats_content_html)
+    final_html = final_html.replace("{{ dynamic_tray_cases_details_content }}", tray_cases_details_html) # New placeholder
     final_html = final_html.replace("{{ dynamic_individual_tote_details_container }}", tote_details_container_html)
     final_html = final_html.replace("{{ dynamic_unplaced_items_content }}", unplaced_items_content_html)
     final_html = final_html.replace("{{ footer_generation_time }}", generation_time)
@@ -602,6 +682,29 @@ max_skus_input = st.sidebar.number_input(
     step=1,
     key="max_unique_skus_per_tote"
 )
+
+# --- Tray Logic Configuration ---
+st.sidebar.subheader("Tray Diversion Logic")
+use_tray_logic = st.sidebar.checkbox(
+    "Place single large cases in tray",
+    value=False,
+    key="use_tray_logic",
+    help="If enabled, large cases that significantly utilize an empty tote's volume will be diverted to separate trays."
+)
+tray_cutoff_percent = 0.0  # Default value if checkbox is off
+if use_tray_logic:
+    tray_cutoff_percent = st.sidebar.number_input(
+        "Utilization cutoff (%) for tray",
+        min_value=0.0,
+        max_value=100.0,
+        value=80.0,  # Default cutoff suggestion
+        step=1.0,
+        key="tray_cutoff_percent",
+        help="Cases that fit in an empty standard tote and occupy at least this percentage of its volume will be placed in a separate tray."
+    )
+    if not (0 <= tray_cutoff_percent <= 100):
+        st.sidebar.warning("Tray utilization cutoff must be between 0 and 100.")
+        # Consider disabling run button or other validation if needed
 
 # --- Case Generation ---
 st.sidebar.subheader("Case Data Source")
@@ -732,7 +835,13 @@ if run_col.button("Run Simulation", key="run_button", type="primary", disabled=s
     st.session_state.simulation_paused = False
     st.session_state.simulation_progress = 0.0
     st.session_state.simulation_generator = None
-    st.session_state.simulation_results = {'visualization_output_list': [], 'full_totes_summary_data': [], 'unplaceable_items_log': []} # Ensure log is reset
+    # Reset all relevant parts of simulation_results
+    st.session_state.simulation_results = {
+        'visualization_output_list': [], 
+        'full_totes_summary_data': [], 
+        'unplaceable_items_log': [],
+        'trays_data': [] # Reset trays_data as well
+    }
     st.session_state.intermediate_results = None
     st.session_state.original_item_count = 0 
     st.session_state.status_message = "Initializing simulation..."
@@ -850,9 +959,12 @@ if run_col.button("Run Simulation", key="run_button", type="primary", disabled=s
             st.session_state.simulation_running = False 
 
     if simulation_can_proceed and current_input_cases:
+        tray_cutoff_decimal = tray_cutoff_percent / 100.0 if use_tray_logic else 0.0
         st.session_state.simulation_generator = simulation.run_simulation_for_visualization_data(
             case_data_list=current_input_cases,
-            current_tote_config=dynamic_tote_config
+            current_tote_config=dynamic_tote_config,
+            use_tray_logic=use_tray_logic, # New parameter
+            tray_cutoff_decimal=tray_cutoff_decimal # New parameter
         )
         st.rerun() 
     elif not simulation_can_proceed:
@@ -889,6 +1001,7 @@ if st.session_state.get('simulation_running') and not st.session_state.get('simu
                     st.session_state.simulation_results['visualization_output_list'] = yielded_data.get('intermediate_vis_data', [])
                     st.session_state.simulation_results['full_totes_summary_data'] = yielded_data.get('intermediate_totes_data', [])
                     st.session_state.simulation_results['unplaceable_items_log'] = yielded_data.get('unplaceable_log', [])
+                    st.session_state.simulation_results['trays_data'] = yielded_data.get('trays_data', []) # Capture trays_data
                     st.session_state.simulation_generator = None
                     st.success("Simulation finished!")
                     st.session_state.status_message = "Simulation Complete." # Override for clarity
@@ -904,13 +1017,16 @@ if st.session_state.get('simulation_running') and not st.session_state.get('simu
                      st.session_state.simulation_results['visualization_output_list'] = st.session_state.intermediate_results.get('intermediate_vis_data', [])
                      st.session_state.simulation_results['full_totes_summary_data'] = st.session_state.intermediate_results.get('intermediate_totes_data', [])
                      st.session_state.simulation_results['unplaceable_items_log'] = st.session_state.intermediate_results.get('unplaceable_log', [])
-                     # Set a clear completion message
+                     st.session_state.simulation_results['trays_data'] = st.session_state.intermediate_results.get('trays_data', []) # Capture trays_data
                      st.session_state.status_message = "Simulation Complete (all items processed)."
                 else:
-                     # This case implies the generator finished without yielding any intermediate_results
-                     # or that intermediate_results was None before this block.
                      st.session_state.status_message = "Simulation Complete (no data yielded)."
-                     st.session_state.simulation_results = {'visualization_output_list': [], 'full_totes_summary_data': [], 'unplaceable_items_log': []}
+                     st.session_state.simulation_results = {
+                         'visualization_output_list': [], 
+                         'full_totes_summary_data': [], 
+                         'unplaceable_items_log': [],
+                         'trays_data': []
+                     }
                 st.rerun()
 
         except Exception as e:
@@ -939,16 +1055,37 @@ elif st.session_state.get('simulation_ran'):
     results_to_display = {
         'intermediate_totes_data': st.session_state.simulation_results['full_totes_summary_data'],
         'intermediate_vis_data': st.session_state.simulation_results['visualization_output_list'],
-        'unplaceable_log': st.session_state.simulation_results.get('unplaceable_items_log', []) 
+        'unplaceable_log': st.session_state.simulation_results.get('unplaceable_items_log', []),
+        'trays_data': st.session_state.simulation_results.get('trays_data', []) # Get trays_data
     }
 
 if results_to_display:
     full_totes_summary_data = results_to_display.get('intermediate_totes_data', [])
-    visualization_output_list = results_to_display.get('intermediate_vis_data', [])
+    visualization_output_list = results_to_display.get('intermediate_vis_data', []) # These are packed items
     unplaceable_log_results = results_to_display.get('unplaceable_log', [])
+    trays_data_results = results_to_display.get('trays_data', []) # Get trays data for display
+
+    # Display tray information if feature was used and there are trays
+    if st.session_state.get('use_tray_logic', False) and trays_data_results:
+        st.subheader("Tray Diversion Summary")
+        st.metric(label="Total Cases Diverted to Trays", value=len(trays_data_results))
+        
+        # Display details of tray cases in a table
+        if trays_data_results:
+            trays_df_display = pd.DataFrame(trays_data_results)
+            trays_df_display_subset = trays_df_display[['case_id', 'dimensions', 'volume', 'tote_utilization']].copy()
+            trays_df_display_subset.rename(columns={
+                'case_id': 'Case ID',
+                'dimensions': 'Dimensions (L,W,H)',
+                'volume': 'Volume',
+                'tote_utilization': 'Empty Tote Utilization (%)'
+            }, inplace=True)
+            trays_df_display_subset['Empty Tote Utilization (%)'] = (trays_df_display_subset['Empty Tote Utilization (%)'] * 100).round(2)
+            st.dataframe(trays_df_display_subset)
+        st.markdown("---")
 
 
-    if full_totes_summary_data:
+    if full_totes_summary_data or trays_data_results: # Show stats if there are totes OR trays
         st.subheader("Overall Simulation Statistics")
 
         utilization_percentages = [
@@ -956,14 +1093,20 @@ if results_to_display:
             for tote in full_totes_summary_data
             if tote.get('utilization_percent') is not None
         ]
-        total_totes_used = len(full_totes_summary_data)
-        total_items_placed_in_stats = sum(len(tote.get('items',[])) for tote in full_totes_summary_data)
+        total_totes_used = len(full_totes_summary_data) # Only packed totes
+        total_items_placed_in_totes = sum(len(tote.get('items',[])) for tote in full_totes_summary_data)
         
-        # Calculate unplaced_items_count based on the log from results_to_display
         unplaced_items_count = len(unplaceable_log_results)
+        total_trays_used_stat = len(trays_data_results)
 
+        # Total cases processed for percentage calculations
+        total_cases_processed_for_stats = total_items_placed_in_totes + unplaced_items_count + total_trays_used_stat
+        
+        percentage_cases_to_trays_stat = 0.0
+        if total_cases_processed_for_stats > 0 and total_trays_used_stat > 0:
+            percentage_cases_to_trays_stat = (total_trays_used_stat / total_cases_processed_for_stats) * 100
 
-        avg_items_per_tote = (total_items_placed_in_stats / total_totes_used) if total_totes_used > 0 else 0.0
+        avg_items_per_tote = (total_items_placed_in_totes / total_totes_used) if total_totes_used > 0 else 0.0
         totes_with_one_item = sum(1 for tote in full_totes_summary_data if len(tote.get('items', [])) == 1)
         percentage_single_case_totes = (totes_with_one_item / total_totes_used * 100) if total_totes_used > 0 else 0.0
 
@@ -989,19 +1132,24 @@ if results_to_display:
         st.markdown("###### Packing Efficiency & Tote Performance")
         
         perf_data = [
-            {"Metric": "Total Totes Used", "Value": str(total_totes_used)},
-            {"Metric": "Total Cases Placed", "Value": str(total_items_placed_in_stats)},
-            {"Metric": "Cases That Did Not Fit", "Value": str(unplaced_items_count)}, # Updated to use log length
-            {"Metric": "Average Items per Tote", "Value": f"{avg_items_per_tote:.2f}"},
+            {"Metric": "Total Totes Used (for packing)", "Value": str(total_totes_used)},
+            {"Metric": "Total Cases Packed into Totes", "Value": str(total_items_placed_in_totes)},
+            {"Metric": "Cases That Did Not Fit (Unplaceable)", "Value": str(unplaced_items_count)},
+            {"Metric": "Average Items per Packed Tote", "Value": f"{avg_items_per_tote:.2f}"},
             {"Metric": "Single-Case Totes (Count)", "Value": str(totes_with_one_item)},
             {"Metric": "Single-Case Totes (%)", "Value": f"{percentage_single_case_totes:.2f}%"},
         ]
-        if utilization_percentages:
+        # Add tray stats if feature was used
+        if st.session_state.get('use_tray_logic', False):
+            perf_data.append({"Metric": "Total Cases Diverted to Trays", "Value": str(total_trays_used_stat)})
+            perf_data.append({"Metric": "Percentage of Cases to Trays", "Value": f"{percentage_cases_to_trays_stat:.2f}%"})
+
+        if utilization_percentages: # These stats are for packed totes only
             perf_data.extend([
-                {"Metric": "Average Tote Utilization", "Value": f"{statistics.mean(utilization_percentages):.2f}%"},
-                {"Metric": "Minimum Tote Utilization", "Value": f"{min(utilization_percentages):.2f}%"},
-                {"Metric": "Median Tote Utilization", "Value": f"{statistics.median(utilization_percentages):.2f}%"},
-                {"Metric": "Maximum Tote Utilization", "Value": f"{max(utilization_percentages):.2f}%"},
+                {"Metric": "Average Packed Tote Utilization", "Value": f"{statistics.mean(utilization_percentages):.2f}%"},
+                {"Metric": "Minimum Packed Tote Utilization", "Value": f"{min(utilization_percentages):.2f}%"},
+                {"Metric": "Median Packed Tote Utilization", "Value": f"{statistics.median(utilization_percentages):.2f}%"},
+                {"Metric": "Maximum Packed Tote Utilization", "Value": f"{max(utilization_percentages):.2f}%"},
             ])
         
         perf_df = pd.DataFrame(perf_data)
@@ -1051,19 +1199,23 @@ if results_to_display:
 
             current_tote_config = st.session_state.get('current_tote_config_for_report', {})
             report_summary_stats = {
-                "total_totes_used": total_totes_used,
-                "total_items_placed": total_items_placed_in_stats,
-                "unplaced_items_count": unplaced_items_count, # Use the accurate count
-                "average_utilization": statistics.mean(utilization_percentages) if utilization_percentages else None,
-                "min_utilization": min(utilization_percentages) if utilization_percentages else None,
-                "median_utilization": statistics.median(utilization_percentages) if utilization_percentages else None,
-                "max_utilization": max(utilization_percentages) if utilization_percentages else None,
-                "avg_items_per_tote": avg_items_per_tote,
-                "totes_with_one_item": totes_with_one_item,
-                "percentage_single_case_totes": percentage_single_case_totes,
-                "num_unique_skus_placed": num_unique_skus_placed,
-                "avg_totes_per_sku": avg_totes_per_sku,
-                "most_frequent_sku": most_frequent_sku_str,
+                "total_totes_used": total_totes_used, # Packed totes
+                "total_items_placed": total_items_placed_in_totes, # Items in packed totes
+                "unplaced_items_count": unplaced_items_count,
+                "average_utilization": statistics.mean(utilization_percentages) if utilization_percentages else None, # For packed totes
+                "min_utilization": min(utilization_percentages) if utilization_percentages else None, # For packed totes
+                "median_utilization": statistics.median(utilization_percentages) if utilization_percentages else None, # For packed totes
+                "max_utilization": max(utilization_percentages) if utilization_percentages else None, # For packed totes
+                "avg_items_per_tote": avg_items_per_tote, # For packed totes
+                "totes_with_one_item": totes_with_one_item, # For packed totes
+                "percentage_single_case_totes": percentage_single_case_totes, # For packed totes
+                "num_unique_skus_placed": num_unique_skus_placed, # In packed totes
+                "avg_totes_per_sku": avg_totes_per_sku, # For packed totes
+                "most_frequent_sku": most_frequent_sku_str, # In packed totes
+                # Add tray stats to summary for HTML report
+                "total_trays_used": total_trays_used_stat,
+                "percentage_cases_to_trays": percentage_cases_to_trays_stat,
+                "total_cases_processed": total_cases_processed_for_stats
             }
             
             csv_export = report_df_for_export.to_csv(index=False).encode('utf-8')
@@ -1076,11 +1228,14 @@ if results_to_display:
             )
 
             html_content_styled = generate_styled_html_report(
-                report_df_for_export, # Pass the detailed item placement data
-                report_summary_stats,
-                current_tote_config,
-                full_totes_summary_data, # This is the per-tote summary
-                unplaceable_log_results 
+                report_df=report_df_for_export, 
+                summary_stats_dict=report_summary_stats,
+                tote_config=current_tote_config,
+                all_totes_data=full_totes_summary_data, 
+                unplaceable_items_log=unplaceable_log_results,
+                trays_data_list=trays_data_results, # Pass tray data
+                tray_feature_enabled_report=st.session_state.get('use_tray_logic', False), # Pass feature status
+                tray_cutoff_percentage_report=st.session_state.get('tray_cutoff_percent', 0.0) # Pass cutoff
             )
             html_export_styled = html_content_styled.encode('utf-8')
             st.download_button(
